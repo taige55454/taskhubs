@@ -1,0 +1,1998 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#F5F5F7" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="岗位协作" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <title>内网岗位任务与排班系统</title>
+  <style>
+    :root {
+      --bg: #F5F5F7;
+      --card: #FFFFFF;
+      --text: #1D1D1F;
+      --sub: #86868B;
+      --line: rgba(0, 0, 0, 0.07);
+      --blue: #007AFF;
+      --green: #34C759;
+      --orange: #FF9500;
+      --red: #FF3B30;
+      --pill-bg: #E8E8ED;
+      --radius: 16px;
+      --shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      padding-bottom: calc(36px + env(safe-area-inset-bottom));
+    }
+    button, input, select, textarea { font: inherit; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(245, 245, 247, 0.84);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 1px solid var(--line);
+      padding: calc(8px + env(safe-area-inset-top)) 16px 12px;
+    }
+    .topbar-inner { max-width: 920px; margin: 0 auto; }
+    .brand-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 10px;
+    }
+    .brand-title { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; display: flex; align-items: center; gap: 8px; }
+    .biz-date-pill { font-size: 12px; font-weight: 500; color: var(--sub); background: var(--pill-bg); padding: 3px 9px; border-radius: 999px; }
+    .user-chip {
+      min-height: 36px; padding: 6px 12px; border-radius: 999px;
+      background: var(--card); border: 1px solid var(--line);
+      font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    }
+    .admin-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); }
+
+    .segmented {
+      display: flex; background: #E3E3E8; padding: 3px; border-radius: 12px; gap: 2px;
+    }
+    .seg-btn {
+      flex: 1; min-height: 38px; border: none; background: transparent; border-radius: 9px;
+      font-size: 13px; font-weight: 600; color: #515154; cursor: pointer; transition: all 0.18s; padding: 0 6px; white-space: nowrap;
+    }
+    .seg-btn.active { background: var(--card); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+
+    .container { max-width: 920px; margin: 14px auto 0; padding: 0 16px; }
+
+    .card {
+      background: var(--card); border-radius: var(--radius); padding: 16px;
+      box-shadow: var(--shadow); border: 1px solid rgba(0,0,0,0.03); margin-bottom: 12px;
+    }
+    .btn {
+      min-height: 44px; padding: 0 16px; border-radius: 12px; border: none;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+    .btn-primary { background: var(--blue); color: #FFF; }
+    .btn-secondary { background: #EEF4FF; color: var(--blue); }
+    .btn-gray { background: var(--pill-bg); color: var(--text); }
+    .btn-danger { background: rgba(255, 59, 48, 0.12); color: var(--red); }
+    .btn-sm { min-height: 36px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
+    .btn-block { width: 100%; }
+
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 13px; font-weight: 600; color: var(--sub); margin-bottom: 6px; }
+    .input, .select, .textarea {
+      width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 12px;
+      border: 1px solid #D2D2D7; background: #FAFAFC; font-size: 15px; color: var(--text); outline: none;
+    }
+    .input:focus, .select:focus, .textarea:focus { border-color: var(--blue); background: #FFF; }
+    .textarea { min-height: 78px; resize: vertical; }
+
+    /* 岗位分区块与专属色彩标签 */
+    .post-group {
+      background: var(--card);
+      border-radius: 18px;
+      padding: 14px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(0,0,0,0.04);
+    }
+    .post-group-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid var(--line);
+      flex-wrap: wrap; gap: 8px;
+    }
+    .post-color-pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 4px 11px; border-radius: 999px; font-size: 13px; font-weight: 700;
+    }
+    .post-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+    /* 任务卡片 */
+    .task-card {
+      background: #FAFAFC; border-radius: 14px; padding: 13px 13px 11px 15px;
+      margin-bottom: 8px; display: flex; align-items: flex-start; gap: 12px;
+      border: 1px solid rgba(0,0,0,0.04);
+    }
+    .task-card:last-child { margin-bottom: 0; }
+    .task-card.standalone { background: var(--card); box-shadow: var(--shadow); margin-bottom: 10px; }
+    .task-card.is-done { opacity: 0.72; }
+    .task-main { flex: 1; min-width: 0; }
+    .task-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 5px; align-items: center; }
+    .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: var(--pill-bg); color: #48484A; }
+    .badge-adhoc { background: #FFF4E5; color: #B25E00; }
+    .badge-pending { background: #FFF1D6; color: #B86E00; }
+    .badge-completed { background: #E3F9E9; color: #1E7E34; }
+    .badge-na { background: #EFEFF4; color: #6E6E73; }
+    .badge-cancelled { background: #FFEBEA; color: #C92A2A; }
+
+    .task-title { font-size: 16px; font-weight: 600; word-break: break-word; }
+    .task-card.is-done .task-title { text-decoration: line-through; color: var(--sub); }
+    .task-desc { font-size: 13px; color: var(--sub); margin-top: 3px; white-space: pre-wrap; }
+    .task-meta { font-size: 12px; color: var(--sub); margin-top: 7px; display: flex; flex-wrap: wrap; gap: 10px; }
+    .task-sub-actions { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px; }
+    .sub-act-btn {
+      min-height: 36px; padding: 0 12px; border-radius: 8px; border: none;
+      background: #EDEDF2; color: #3A3A3C; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+
+    .check-trigger {
+      width: 48px; height: 48px; min-width: 48px; border-radius: 50%; border: none;
+      background: transparent; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+    }
+    .check-circle {
+      width: 28px; height: 28px; border-radius: 50%; border: 2.2px solid #C7C7CC;
+      display: flex; align-items: center; justify-content: center; transition: all 0.18s; color: #FFF; font-size: 15px; font-weight: 700;
+    }
+    .check-trigger.done .check-circle { background: var(--green); border-color: var(--green); }
+    .check-trigger.na .check-circle { background: #AEAEB2; border-color: #AEAEB2; }
+
+    .stats-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+    .stat-box { background: var(--card); border-radius: 14px; padding: 10px 8px; text-align: center; box-shadow: var(--shadow); }
+    .stat-num { font-size: 20px; font-weight: 700; }
+    .stat-lbl { font-size: 11px; color: var(--sub); margin-top: 2px; }
+
+    .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .filter-bar .input, .filter-bar .select { width: auto; flex: 1; min-width: 135px; min-height: 40px; padding: 6px 10px; font-size: 14px; background: var(--card); }
+
+    /* 预排班矩阵网格 */
+    .sched-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: #FFF; }
+    .sched-grid { width: 100%; border-collapse: collapse; min-width: 620px; font-size: 13px; }
+    .sched-grid th, .sched-grid td { padding: 8px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); text-align: center; }
+    .sched-grid th { background: #F8F8FA; font-weight: 600; white-space: nowrap; }
+    .sched-grid td:first-child, .sched-grid th:first-child { position: sticky; left: 0; background: #F8F8FA; font-weight: 700; z-index: 2; text-align: left; min-width: 110px; }
+    .sched-sel {
+      width: 100%; min-width: 86px; min-height: 36px; padding: 4px 6px;
+      border-radius: 8px; border: 1px solid #DFDFE4; background: #FAFAFC; font-size: 13px; font-weight: 600;
+    }
+    .sched-sel.is-draft { border-color: var(--blue); background: #F0F7FF; color: var(--blue); }
+
+    /* 📖 翻阅式历史完成手账 */
+    .book-stage {
+      background: #FDFCF9;
+      border-radius: 22px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.08), inset 0 0 0 1px rgba(0,0,0,0.06);
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.22s ease, opacity 0.22s ease;
+    }
+    .book-stage.flipping { opacity: 0.45; transform: scale(0.985); }
+    .book-header {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      border-bottom: 2px solid #1D1D1F; padding-bottom: 14px; margin-bottom: 16px; gap: 12px; flex-wrap: wrap;
+    }
+    .book-issue { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: var(--sub); text-transform: uppercase; }
+    .book-date-big { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-top: 2px; }
+    .book-stamp {
+      padding: 6px 14px; border-radius: 10px; font-weight: 800; font-size: 14px;
+      border: 2.5px solid var(--green); color: var(--green); transform: rotate(-4deg);
+      letter-spacing: 1px; user-select: none;
+    }
+    .book-stamp.warn { border-color: var(--orange); color: var(--orange); }
+    .comic-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .comic-panel {
+      background: #FFFFFF;
+      border: 2px solid #1D1D1F;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 3px 3px 0 rgba(29,29,31,0.12);
+      display: flex; flex-direction: column;
+    }
+    .comic-panel-hdr {
+      padding: 8px 12px; font-weight: 700; font-size: 14px;
+      display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1.5px solid #1D1D1F;
+    }
+    .comic-panel-body { padding: 10px 12px; flex: 1; }
+    .comic-item {
+      padding: 7px 0; border-bottom: 1px dashed rgba(0,0,0,0.12); font-size: 13px;
+    }
+    .comic-item:last-child { border-bottom: none; }
+    .chapter-strip {
+      display: flex; gap: 6px; overflow-x: auto; padding: 10px 4px 4px; margin-top: 14px;
+    }
+    .chapter-pill {
+      flex-shrink: 0; min-height: 36px; padding: 4px 10px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--card); font-size: 12px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+    }
+    .chapter-pill.active { background: #1D1D1F; color: #FFF; border-color: #1D1D1F; }
+
+    /* 周期模板两级分类样式 */
+    .tmpl-cycle-section { margin-bottom: 18px; }
+    .tmpl-cycle-title {
+      font-size: 15px; font-weight: 700; color: #1D1D1F;
+      margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+    }
+    .tmpl-post-block {
+      background: #FAFAFC; border: 1px solid var(--line); border-radius: 12px;
+      padding: 10px 12px; margin-bottom: 8px;
+    }
+    .tmpl-post-header {
+      font-size: 13px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+    }
+
+    /* 多选星期胶囊 & 色板选择器 */
+    .chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .day-chip {
+      min-width: 46px; min-height: 42px; padding: 0 10px; border-radius: 10px;
+      border: 1.5px solid #D2D2D7; background: #FAFAFC; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    .day-chip.selected { border-color: var(--blue); background: #EDF5FF; color: var(--blue); }
+    .color-swatch {
+      width: 36px; height: 36px; border-radius: 50%; border: 3px solid transparent; cursor: pointer;
+    }
+    .color-swatch.selected { border-color: #1D1D1F; transform: scale(1.1); }
+
+    /* 底部抽屉弹窗 */
+    .sheet-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.36); z-index: 100;
+      opacity: 0; pointer-events: none; transition: opacity 0.22s ease;
+      display: flex; align-items: flex-end; justify-content: center;
+    }
+    .sheet-backdrop.open { opacity: 1; pointer-events: auto; }
+    .sheet {
+      width: 100%; max-width: 560px; max-height: 88vh; background: var(--card);
+      border-radius: 22px 22px 0 0; display: flex; flex-direction: column;
+      transform: translateY(100%); transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    .sheet-backdrop.open .sheet { transform: translateY(0); }
+    .sheet-handle { width: 38px; height: 5px; border-radius: 99px; background: #D1D1D6; margin: 10px auto 4px; flex-shrink: 0; }
+    .sheet-header { padding: 8px 20px 12px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .sheet-title { font-size: 17px; font-weight: 700; }
+    .sheet-close { min-width: 44px; min-height: 44px; border: none; background: transparent; color: var(--sub); font-size: 20px; cursor: pointer; }
+    .sheet-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+    .sheet-footer { padding: 12px 20px 16px; border-top: 1px solid var(--line); background: var(--card); flex-shrink: 0; }
+
+    .person-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .person-opt {
+      min-height: 50px; padding: 10px 12px; border-radius: 12px; border: 1.5px solid #E5E5EA;
+      background: #FAFAFC; font-size: 15px; font-weight: 600; text-align: left;
+      display: flex; align-items: center; justify-content: space-between; cursor: pointer;
+    }
+    .person-opt.selected { border-color: var(--blue); background: #EDF5FF; color: var(--blue); }
+
+    .empty-state { text-align: center; padding: 40px 20px; color: var(--sub); font-size: 14px; }
+    .pwa-banner {
+      background: #FFFFFF; border-radius: 14px; padding: 12px 14px; margin-bottom: 12px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      border: 1px solid rgba(0,122,255,0.2);
+    }
+    .section-hdr { font-size: 15px; font-weight: 700; margin: 16px 0 8px; display: flex; align-items: center; justify-content: space-between; }
+    .row-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+    .row-item:last-child { border-bottom: none; }
+
+    .toast {
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-80px);
+      background: rgba(29, 29, 31, 0.92); color: #FFF; padding: 10px 18px; border-radius: 999px;
+      font-size: 14px; font-weight: 500; z-index: 200; transition: transform 0.25s ease; pointer-events: none;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- 顶部导航 -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-row">
+        <div class="brand-title">
+          <span>岗位协作</span>
+          <span id="bizDatePill" class="biz-date-pill">--</span>
+        </div>
+        <button id="userBtn" class="user-chip hidden" onclick="openUserSheet()">
+          <span id="adminDot" class="admin-dot hidden"></span>
+          <span id="userNameTxt">未登录</span>
+        </button>
+      </div>
+      <nav id="mainNav" class="segmented hidden">
+        <button class="seg-btn active" data-tab="mine" onclick="switchTab('mine')">我的待办</button>
+        <button class="seg-btn" data-tab="all" onclick="switchTab('all')">全部岗位</button>
+        <button class="seg-btn" data-tab="handover" onclick="switchTab('handover')">未完成交接</button>
+        <button id="adminTabBtn" class="seg-btn hidden" data-tab="admin" onclick="switchTab('admin')">主机管理</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- PWA 安装提示 -->
+    <div id="pwaBanner" class="pwa-banner hidden">
+      <div style="font-size:13px;"><strong>添加到主屏幕</strong>：全屏免黑框、秒开且长期保持登录</div>
+      <div style="display:flex;gap:6px;">
+        <button class="btn btn-secondary btn-sm" onclick="openPwaGuide()">指引</button>
+        <button class="btn btn-gray btn-sm" onclick="dismissPwaBanner()">忽略</button>
+      </div>
+    </div>
+
+    <!-- 登录视图 -->
+    <section id="loginView" class="hidden">
+      <div class="card" style="max-width:440px;margin:28px auto;">
+        <h2 style="margin:0 0 6px;font-size:22px;">选择或输入身份进入</h2>
+        <p style="margin:0 0 16px;color:var(--sub);font-size:13px;">
+          管理员默认初始密码为 <code>admin123</code>，普通成员未设密码可直接免密进入
+        </p>
+        <div id="quickLoginGrid" class="person-grid" style="margin-bottom:16px;"></div>
+        <div class="field">
+          <label>昵称</label>
+          <input id="loginNicknameInput" type="text" autocomplete="username" class="input" placeholder="输入姓名或选择上方成员" />
+        </div>
+        <div class="field">
+          <label>密码（若该身份已设置或为主机管理员）</label>
+          <input id="loginPasswordInput" type="password" autocomplete="current-password" class="input" placeholder="未设密码可留空" />
+        </div>
+        <button id="loginSubmitBtn" class="btn btn-primary btn-block" onclick="doLogin()">进入系统</button>
+      </div>
+    </section>
+
+    <!-- 1. 我的待办 & 2. 全部岗位看板（按岗位色彩分区） -->
+    <section id="tasksView" class="hidden">
+      <div id="allFilterArea" class="hidden">
+        <div class="filter-bar">
+          <input id="filterDate" type="date" class="input" onchange="loadTasks()" />
+          <select id="filterPost" class="select" onchange="loadTasks()">
+            <option value="0">全部岗位</option>
+          </select>
+          <button class="btn btn-gray btn-sm" onclick="resetFilterToday()">回到今天</button>
+        </div>
+        <div class="stats-bar">
+          <div class="stat-box"><div id="stPending" class="stat-num" style="color:var(--orange)">0</div><div class="stat-lbl">待完成</div></div>
+          <div class="stat-box"><div id="stCompleted" class="stat-num" style="color:var(--green)">0</div><div class="stat-lbl">已完成</div></div>
+          <div class="stat-box"><div id="stNA" class="stat-num" style="color:var(--sub)">0</div><div class="stat-lbl">当日无此项</div></div>
+          <div class="stat-box" style="cursor:pointer;" onclick="toggleRateMode()">
+            <div id="stRate" class="stat-num" style="color:var(--blue)">0%</div>
+            <div id="stRateLbl" class="stat-lbl">完成率(不含无此项) ⇄</div>
+          </div>
+        </div>
+      </div>
+      <div id="tasksList"></div>
+    </section>
+
+    <!-- 3. 未完成交接单 & 批量交接 -->
+    <section id="handoverView" class="hidden">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div style="font-size:17px;font-weight:700;">当日全岗位未完成交接单</div>
+            <div style="font-size:12px;color:var(--sub);">一键拉出今日全岗位待完成项，可单项或按岗位批量交接</div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-gray btn-sm" onclick="copyUnfinishedSummary()">复制汇总文本</button>
+            <button class="btn btn-primary btn-sm" onclick="openBatchHandoverSheet()">批量交接 (<span id="selHandoverCnt">0</span>)</button>
+          </div>
+        </div>
+      </div>
+      <div id="handoverGroups"></div>
+      <div class="section-hdr"><span>今日交接流水记录</span></div>
+      <div id="handoverHistory" class="card"></div>
+    </section>
+
+    <!-- 4. 主机管理台 -->
+    <section id="adminView" class="hidden">
+      <!-- 快捷派发临时任务 -->
+      <div class="card">
+        <div class="section-hdr" style="margin-top:0;"><span>派发临时任务（直接指派伙伴 / 挂靠岗位）</span></div>
+        <div class="field">
+          <label>任务标题 *</label>
+          <input id="adhocTitle" type="text" class="input" placeholder="输入临时任务内容" />
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+          <div class="field">
+            <label>指派给伙伴（推荐）</label>
+            <select id="adhocPerson" class="select"></select>
+          </div>
+          <div class="field">
+            <label>或归属岗位（自动带出排班人）</label>
+            <select id="adhocPost" class="select"></select>
+          </div>
+          <div class="field">
+            <label>业务日期</label>
+            <input id="adhocDate" type="date" class="input" />
+          </div>
+        </div>
+        <div class="field">
+          <label>补充说明（可选）</label>
+          <input id="adhocDesc" type="text" class="input" placeholder="补充要求或交接说明" />
+        </div>
+        <button id="adhocSubmitBtn" class="btn btn-primary" onclick="submitAdhoc()">立即派发临时任务</button>
+      </div>
+
+      <!-- 岗位当值排班表（可视化矩阵 + 公平轮询草稿 + 表格/文本导入） -->
+      <div class="card">
+        <div class="section-hdr" style="margin-top:0;flex-wrap:wrap;gap:8px;">
+          <div>
+            <span>岗位当值排班表</span>
+            <span style="font-size:12px;color:var(--sub);font-weight:normal;margin-left:6px;">优先每人每天 1 岗</span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="generateRotaDraft()">生成未来 7 天公平轮询草稿</button>
+            <button class="btn btn-gray btn-sm" onclick="openImportScheduleSheet()">导入排班表格</button>
+            <button class="btn btn-primary btn-sm" onclick="saveScheduleMatrix()">保存排班表</button>
+          </div>
+        </div>
+        <div class="sched-scroll" style="margin-top:10px;">
+          <table class="sched-grid">
+            <thead id="schedThead"></thead>
+            <tbody id="schedTbody"></tbody>
+          </table>
+        </div>
+        <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <button id="manualGenBtn" class="btn btn-gray btn-sm" onclick="manualGenerate()">立即按今日排班补生周期任务</button>
+          <span style="font-size:12px;color:var(--sub);">每天 00:05 自动根据排班表生成并指派任务</span>
+        </div>
+      </div>
+
+      <!-- 📖 翻页式「历史完成手账」 (Comic/Book Flipbook) -->
+      <div class="card" style="padding:14px;">
+        <div class="section-hdr" style="margin-top:0;">
+          <span style="font-size:17px;">📖 历史完成手账</span>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-secondary btn-sm" onclick="flipBook('prev')">◀ 前一天</button>
+            <button class="btn btn-secondary btn-sm" onclick="flipBook('next')">后一天 ▶</button>
+          </div>
+        </div>
+        <p style="margin:0 0 12px;font-size:12px;color:var(--sub);">
+          像阅读书籍一样沉浸式翻阅每日当值与清零情况（支持键盘 ← / → 翻页或触屏左右滑动）
+        </p>
+
+        <div id="bookStage" class="book-stage">
+          <div class="book-header">
+            <div>
+              <div class="book-issue">TASK LOGBOOK · DAILY CHAPTER</div>
+              <div id="bookDateTxt" class="book-date-big">---- -- --</div>
+              <div id="bookRotaSummary" style="font-size:13px;color:var(--sub);margin-top:4px;"></div>
+            </div>
+            <div id="bookStampBadge" class="book-stamp">全员清零</div>
+          </div>
+
+          <div id="bookComicGrid" class="comic-grid"></div>
+        </div>
+
+        <!-- 底部日期章节轴（绿点全清、橙点有待办） -->
+        <div id="chapterStrip" class="chapter-strip"></div>
+      </div>
+
+      <!-- 周期任务模板（按周期与岗位两级聚合） -->
+      <div class="card">
+        <div class="section-hdr" style="margin-top:0;">
+          <span>周期任务模板（每日 / 每周多天 / 每月多天与月末自适应）</span>
+          <button class="btn btn-secondary btn-sm" onclick="openTemplateSheet()">+ 新增模板</button>
+        </div>
+        <div id="templateCategoryList"></div>
+      </div>
+
+      <!-- 岗位与人员管理（带色板选择与独立密码） -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;">
+        <div class="card">
+          <div class="section-hdr" style="margin-top:0;">
+            <span>岗位与色标设置</span>
+            <button class="btn btn-secondary btn-sm" onclick="openPostSheet()">+ 新增岗位</button>
+          </div>
+          <div id="postAdminList"></div>
+        </div>
+        <div class="card">
+          <div class="section-hdr" style="margin-top:0;">
+            <span>人员与密码配置</span>
+            <button class="btn btn-secondary btn-sm" onclick="openPersonSheet()">+ 新增人员</button>
+          </div>
+          <div id="personAdminList"></div>
+        </div>
+      </div>
+
+      <!-- 系统与安全：监听端口修改、内网二维码与备份 -->
+      <div class="card">
+        <div class="section-hdr" style="margin-top:0;"><span>系统配置、扫码与数据备份</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:center;">
+          <img id="lanQrImg" alt="内网扫码二维码" style="width:144px;height:144px;border:1px solid var(--line);border-radius:12px;padding:6px;background:#FFF;" />
+          <div style="flex:1;min-width:230px;">
+            <div style="font-size:13px;color:var(--sub);">局域网访问地址：</div>
+            <div style="display:flex;align-items:center;gap:8px;margin:5px 0 10px;flex-wrap:wrap;">
+              <code id="lanUrlTxt" style="font-size:15px;font-weight:700;background:#F2F2F7;padding:5px 10px;border-radius:8px;"></code>
+              <button class="btn btn-secondary btn-sm" onclick="copyText(state.lanUrl)">复制</button>
+            </div>
+            <div class="field" style="max-width:240px;margin-bottom:8px;">
+              <label>修改开放端口（热切换，被占用自动防护）</label>
+              <div style="display:flex;gap:6px;">
+                <input id="serverPortInput" type="number" class="input" style="min-height:36px;padding:4px 8px;" />
+                <button class="btn btn-primary btn-sm" onclick="updateServerPort()">应用新端口</button>
+              </div>
+            </div>
+            <div id="procInfoTxt" style="font-size:12px;color:var(--sub);margin-bottom:8px;"></div>
+            <button id="backupNowBtn" class="btn btn-gray btn-sm" onclick="triggerBackup()">立即执行完整性备份 (VACUUM INTO)</button>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--sub);">
+          <strong>最近备份列表（每日 03:00 自动备份，保留 30 天）：</strong>
+          <div id="backupFilesTxt" style="margin-top:4px;"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 底部升起抽屉弹窗 (Bottom Sheet) -->
+  <div id="sheetBackdrop" class="sheet-backdrop" onclick="onBackdropClick(event)">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <div id="sheetTitle" class="sheet-title">操作确认</div>
+        <button class="sheet-close" onclick="closeSheet()">✕</button>
+      </div>
+      <div id="sheetBody" class="sheet-body"></div>
+      <div id="sheetFooter" class="sheet-footer"></div>
+    </div>
+  </div>
+
+  <script>
+    const PALETTE = ['#007AFF', '#34C759', '#FF9500', '#AF52DE', '#FF2D55', '#5856D6', '#00C7BE', '#FF3B30'];
+    const WEEK_NAMES = ['日', '一', '二', '三', '四', '五', '六'];
+
+    const state = {
+      businessDate: '',
+      port: '8080',
+      lanUrl: '',
+      processName: '',
+      pid: 0,
+      user: null,
+      csrfToken: '',
+      people: [],
+      posts: [],
+      templates: [],
+      backups: [],
+      tab: 'mine',
+      tasks: [],
+      stats: null,
+      rateInclusive: false,
+      selectedHandoverIDs: new Set(),
+      scheduleMatrix: { dates: [], entries: [] },
+      historyBook: { date: '', prevDate: '', nextDate: '', chapterBar: [] },
+      adhocDebounceTimer: null
+    };
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+    }
+
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => el.classList.remove('show'), 2400);
+    }
+
+    async function api(path, opts = {}) {
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      if (state.csrfToken && opts.method && opts.method !== 'GET') {
+        headers['X-CSRF-Token'] = state.csrfToken;
+      }
+      const res = await fetch(path, Object.assign({}, opts, { headers, credentials: 'same-origin' }));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) {
+          state.user = null;
+          renderAppShell();
+        }
+        throw new Error(data.error || ('请求失败 ' + res.status));
+      }
+      return data;
+    }
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    async function initApp() {
+      checkPwaBanner();
+      try {
+        const boot = await api('/api/bootstrap');
+        state.businessDate = boot.business_date;
+        state.port = boot.port;
+        state.lanUrl = boot.lan_url;
+        state.processName = boot.process_name;
+        state.pid = boot.pid;
+        state.user = boot.current_user;
+        state.csrfToken = boot.csrf_token || '';
+        state.people = boot.people || [];
+        state.posts = boot.posts || [];
+        state.backups = boot.backups || [];
+
+        document.getElementById('bizDatePill').textContent = state.businessDate;
+        const fDate = document.getElementById('filterDate');
+        if (!fDate.value) fDate.value = state.businessDate;
+        const aDate = document.getElementById('adhocDate');
+        if (!aDate.value) aDate.value = state.businessDate;
+
+        renderAppShell();
+        if (boot.default_admin_pwd && state.user && state.user.is_admin) {
+          showToast('提醒：当前使用的是初始密码 admin123，建议在右上角修改');
+        }
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function checkPwaBanner() {
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+      const dismissed = localStorage.getItem('pwa_guide_dismissed') === '1';
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile && !isStandalone && !dismissed) {
+        document.getElementById('pwaBanner').classList.remove('hidden');
+      }
+    }
+
+    function dismissPwaBanner() {
+      localStorage.setItem('pwa_guide_dismissed', '1');
+      document.getElementById('pwaBanner').classList.add('hidden');
+    }
+
+    function openPwaGuide() {
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const body = isIOS
+        ? `<div style="font-size:14px;line-height:1.7;">
+            <p><strong>iOS Safari 添加到主屏幕：</strong></p>
+            <ol style="padding-left:18px;">
+              <li>点击 Safari 底部 <strong>「分享」图标</strong>；</li>
+              <li>上滑选择 <strong>「添加到主屏幕」</strong>；</li>
+              <li>点击右上角 <strong>「添加」</strong>，从桌面启动全屏免密。</li>
+            </ol>
+           </div>`
+        : `<div style="font-size:14px;line-height:1.7;">
+            <p><strong>Android Chrome 添加到桌面：</strong></p>
+            <ol style="padding-left:18px;">
+              <li>点击浏览器右上角 <strong>「⋮」菜单</strong>；</li>
+              <li>选择 <strong>「添加到主屏幕 / 安装应用」</strong>。</li>
+            </ol>
+           </div>`;
+      openSheet('添加到主屏幕指引', body, `<button class="btn btn-primary btn-block" onclick="closeSheet()">好</button>`);
+    }
+
+    function renderAppShell() {
+      const loginView = document.getElementById('loginView');
+      const mainNav = document.getElementById('mainNav');
+      const userBtn = document.getElementById('userBtn');
+      const adminTabBtn = document.getElementById('adminTabBtn');
+
+      if (!state.user) {
+        loginView.classList.remove('hidden');
+        mainNav.classList.add('hidden');
+        userBtn.classList.add('hidden');
+        document.getElementById('tasksView').classList.add('hidden');
+        document.getElementById('handoverView').classList.add('hidden');
+        document.getElementById('adminView').classList.add('hidden');
+
+        const activePeople = state.people.filter(p => p.is_active);
+        document.getElementById('quickLoginGrid').innerHTML = activePeople.map(p => `
+          <button class="person-opt" onclick="quickPickLogin('${esc(p.nickname)}', ${p.has_password || p.is_admin})">
+            <div>
+              <div style="font-size:15px;font-weight:700;">${esc(p.nickname)}</div>
+              <div style="font-size:11px;color:var(--sub);">${p.is_admin ? '管理员' : (p.has_password ? '已设密码' : '免密点选')}</div>
+            </div>
+            <span style="font-size:12px;color:var(--blue);">${p.has_password || p.is_admin ? '需密码' : '一键进'}</span>
+          </button>
+        `).join('');
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const autoU = urlParams.get('u');
+        if (autoU) {
+          document.getElementById('loginNicknameInput').value = autoU;
+          document.getElementById('loginPasswordInput').focus();
+        }
+        return;
+      }
+
+      loginView.classList.add('hidden');
+      mainNav.classList.remove('hidden');
+      userBtn.classList.remove('hidden');
+      document.getElementById('userNameTxt').textContent = state.user.nickname;
+      document.getElementById('adminDot').classList.toggle('hidden', !state.user.is_admin);
+      adminTabBtn.classList.toggle('hidden', !state.user.is_admin);
+
+      if (state.tab === 'admin' && !state.user.is_admin) {
+        state.tab = 'mine';
+      }
+      populatePostFilter();
+      switchTab(state.tab);
+    }
+
+    function quickPickLogin(nickname, needsPwd) {
+      document.getElementById('loginNicknameInput').value = nickname;
+      const pwdInput = document.getElementById('loginPasswordInput');
+      if (needsPwd) {
+        pwdInput.focus();
+        showToast('请输入该账号的登录密码');
+      } else {
+        pwdInput.value = '';
+        doLogin();
+      }
+    }
+
+    async function doLogin() {
+      const btn = document.getElementById('loginSubmitBtn');
+      const nickname = document.getElementById('loginNicknameInput').value.trim();
+      const password = document.getElementById('loginPasswordInput').value;
+      if (!nickname) return showToast('请输入或点选昵称');
+      btn.disabled = true;
+      try {
+        await api('/api/login', { method: 'POST', body: JSON.stringify({ nickname, password }) });
+        await initApp();
+        showToast('登录成功');
+      } catch (e) {
+        showToast(e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function openUserSheet() {
+      if (!state.user) return;
+      openSheet(
+        '账号信息',
+        `<div style="font-size:15px;margin-bottom:12px;">当前身份：<strong>${esc(state.user.nickname)}</strong> ${state.user.is_admin ? '<span class="badge" style="background:#EAF3FF;color:var(--blue);">主机管理员</span>' : ''}</div>
+         <div class="field">
+           <label>修改自己的密码（普通成员可留空保存以清除密码）</label>
+           <input id="myOldPwd" type="password" class="input" placeholder="输入原密码（未设密码留空）" style="margin-bottom:6px;" />
+           <input id="myNewPwd" type="password" class="input" placeholder="输入新密码（留空则免密）" />
+         </div>
+         <button class="btn btn-secondary btn-sm btn-block" onclick="submitChangeOwnPwd()">更新我的密码</button>`,
+        `<div style="display:flex;gap:10px;">
+           <button class="btn btn-gray" style="flex:1;" onclick="openPwaGuide()">主屏幕指引</button>
+           <button class="btn btn-danger" style="flex:1;" onclick="doLogout()">退出账号</button>
+         </div>`
+      );
+    }
+
+    async function submitChangeOwnPwd() {
+      const oldPwd = document.getElementById('myOldPwd').value;
+      const newPwd = document.getElementById('myNewPwd').value;
+      const clearPwd = !newPwd && !state.user.is_admin;
+      try {
+        await api('/api/me/password', {
+          method: 'POST',
+          body: JSON.stringify({ old_password: oldPwd, new_password: newPwd, clear_password: clearPwd })
+        });
+        showToast('密码已更新');
+        closeSheet();
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    async function doLogout() {
+      try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (_) {}
+      closeSheet();
+      state.user = null;
+      state.csrfToken = '';
+      renderAppShell();
+    }
+
+    function populatePostFilter() {
+      const sel = document.getElementById('filterPost');
+      const curr = sel.value || '0';
+      const activePosts = state.posts.filter(p => p.is_active);
+      sel.innerHTML = `<option value="0">全部岗位</option>` +
+        activePosts.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+      sel.value = curr;
+    }
+
+    function switchTab(tab) {
+      state.tab = tab;
+      document.querySelectorAll('#mainNav .seg-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === tab);
+      });
+
+      document.getElementById('tasksView').classList.toggle('hidden', tab !== 'mine' && tab !== 'all');
+      document.getElementById('allFilterArea').classList.toggle('hidden', tab !== 'all');
+      document.getElementById('handoverView').classList.toggle('hidden', tab !== 'handover');
+      document.getElementById('adminView').classList.toggle('hidden', tab !== 'admin');
+
+      if (tab === 'mine' || tab === 'all') loadTasks();
+      else if (tab === 'handover') loadHandoverView();
+      else if (tab === 'admin') renderAdminView();
+    }
+
+    function resetFilterToday() {
+      document.getElementById('filterDate').value = state.businessDate;
+      document.getElementById('filterPost').value = '0';
+      loadTasks();
+    }
+
+    function toggleRateMode() {
+      state.rateInclusive = !state.rateInclusive;
+      renderStats();
+    }
+
+    function renderStats() {
+      if (!state.stats) return;
+      document.getElementById('stPending').textContent = state.stats.pending;
+      document.getElementById('stCompleted').textContent = state.stats.completed;
+      document.getElementById('stNA').textContent = state.stats.not_applicable;
+      const rate = state.rateInclusive ? state.stats.rate_inclusive : state.stats.rate_strict;
+      document.getElementById('stRate').textContent = rate.toFixed(0) + '%';
+      document.getElementById('stRateLbl').textContent = state.rateInclusive
+        ? '完成率(含无此项分母) ⇄'
+        : '完成率(不含无此项) ⇄';
+    }
+
+    async function loadTasks() {
+      const isMine = state.tab === 'mine';
+      const date = isMine ? state.businessDate : (document.getElementById('filterDate').value || state.businessDate);
+      const postID = isMine ? '0' : (document.getElementById('filterPost').value || '0');
+      const scope = isMine ? 'mine' : 'all';
+
+      try {
+        const data = await api(`/api/tasks?date=${encodeURIComponent(date)}&scope=${scope}&post_id=${postID}`);
+        state.businessDate = data.business_date;
+        document.getElementById('bizDatePill').textContent = state.businessDate;
+        state.tasks = data.tasks || [];
+        state.stats = data.stats;
+        state.currentSchedules = data.schedules || [];
+        if (!isMine) renderStats();
+        renderTaskCards();
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function renderTaskCards() {
+      const box = document.getElementById('tasksList');
+      if (!state.tasks.length) {
+        box.innerHTML = `<div class="card empty-state">${
+          state.tab === 'mine' ? '太棒了，今日暂无需要你完成的任务' : '当前筛选条件下暂无任务记录'
+        }</div>`;
+        return;
+      }
+
+      // 我的待办：单张卡片流
+      if (state.tab === 'mine') {
+        box.innerHTML = state.tasks.map(t => renderSingleTaskCard(t, true)).join('');
+        return;
+      }
+
+      // 全部岗位：按岗位色彩分区聚合
+      const groups = {};
+      state.tasks.forEach(t => {
+        const key = t.post_id ? `p_${t.post_id}` : 'adhoc';
+        if (!groups[key]) groups[key] = { name: t.post_name, color: t.post_color || '#007AFF', items: [] };
+        groups[key].items.push(t);
+      });
+
+      const schedMap = {};
+      (state.currentSchedules || []).forEach(s => { schedMap[s.post_id] = s.person_name; });
+
+      box.innerHTML = Object.entries(groups).map(([key, g]) => {
+        const doneCount = g.items.filter(x => x.status === 'completed' || x.status === 'not_applicable').length;
+        const schedPerson = key.startsWith('p_') ? schedMap[Number(key.slice(2))] : '';
+        return `
+          <div class="post-group">
+            <div class="post-group-hdr">
+              <div class="post-color-pill" style="background:${esc(g.color)}18;color:${esc(g.color)};">
+                <span class="post-dot" style="background:${esc(g.color)};"></span>
+                <span>${esc(g.name)}</span>
+              </div>
+              <div style="font-size:12px;color:var(--sub);">
+                ${schedPerson ? `当值伙伴：<strong>${esc(schedPerson)}</strong> · ` : ''}
+                进度：${doneCount}/${g.items.length} 完成
+              </div>
+            </div>
+            <div>${g.items.map(t => renderSingleTaskCard(t, false)).join('')}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderSingleTaskCard(t, standalone) {
+      const isPending = t.status === 'pending';
+      const isDone = t.status === 'completed';
+      const isNA = t.status === 'not_applicable';
+      const isAssignee = t.current_assignee_id && state.user && t.current_assignee_id === state.user.id;
+      const canMarkNA = isPending && (isAssignee || (state.user && state.user.is_admin));
+      const canRevertNA = isNA && t.business_date === state.businessDate &&
+        ((state.user && state.user.is_admin) || (t.not_applicable_by === state.user.id));
+      const canRevertComp = isDone && state.user && state.user.is_admin;
+      const canCancel = isPending && t.source === 'adhoc' && state.user && state.user.is_admin;
+
+      let metaParts = [`<span>当值：<strong>${esc(t.current_assignee_name)}</strong></span>`];
+      if (t.original_assignee_id && t.original_assignee_id !== t.current_assignee_id) {
+        metaParts.push(`<span>初始：${esc(t.original_assignee_name)}</span>`);
+      }
+      if (isDone && t.completed_by_name) {
+        const isProxy = t.current_assignee_id && t.completed_by !== t.current_assignee_id;
+        metaParts.push(`<span style="color:var(--green);">完成人：${esc(t.completed_by_name)}${isProxy ? ' (协助完成)' : ''}</span>`);
+      }
+      if (isNA) {
+        metaParts.push(`<span>标记人：${esc(t.not_applicable_by_name)}${t.not_applicable_note ? ' · ' + esc(t.not_applicable_note) : ''}</span>`);
+      }
+
+      let subBtns = [];
+      if (canMarkNA) subBtns.push(`<button class="sub-act-btn" onclick="openNASheet(${t.id})">当日无此项</button>`);
+      if (isPending) subBtns.push(`<button class="sub-act-btn" onclick="openSingleHandoverSheet(${t.id})">交接</button>`);
+      if (canRevertNA) subBtns.push(`<button class="sub-act-btn" onclick="doRevertNA(${t.id})">撤销无此项</button>`);
+      if (canRevertComp) subBtns.push(`<button class="sub-act-btn" onclick="openRevertCompSheet(${t.id})">撤销完成</button>`);
+      if (canCancel) subBtns.push(`<button class="sub-act-btn" style="color:var(--red);" onclick="openCancelAdhocSheet(${t.id})">取消任务</button>`);
+
+      let stBadge = '';
+      if (t.status === 'completed') stBadge = '<span class="badge badge-completed">已完成</span>';
+      else if (t.status === 'not_applicable') stBadge = '<span class="badge badge-na">无此项</span>';
+      else if (t.status === 'cancelled') stBadge = '<span class="badge badge-cancelled">已取消</span>';
+      else stBadge = '<span class="badge badge-pending">待完成</span>';
+
+      return `
+        <div class="task-card ${standalone ? 'standalone' : ''} ${isDone || isNA ? 'is-done' : ''}">
+          <div class="task-main">
+            <div class="task-badges">
+              <span class="badge" style="background:${esc(t.post_color || '#007AFF')}18;color:${esc(t.post_color || '#007AFF')};">${esc(t.post_name)}</span>
+              ${t.source === 'adhoc' ? '<span class="badge badge-adhoc">临时</span>' : ''}
+              ${stBadge}
+            </div>
+            <div class="task-title">${esc(t.title)}</div>
+            ${t.description ? `<div class="task-desc">${esc(t.description)}</div>` : ''}
+            <div class="task-meta">${metaParts.join('')}</div>
+            ${subBtns.length ? `<div class="task-sub-actions">${subBtns.join('')}</div>` : ''}
+          </div>
+          <button class="check-trigger ${isDone ? 'done' : (isNA ? 'na' : '')}"
+            ${isPending ? `onclick="openCompleteSheet(${t.id})"` : 'disabled'} aria-label="完成任务">
+            <span class="check-circle">${isDone ? '✓' : (isNA ? '—' : '')}</span>
+          </button>
+        </div>
+      `;
+    }
+
+    // ==================== 完成 / 无此项 / 撤销 / 交接 ====================
+
+    function openCompleteSheet(taskID) {
+      const t = state.tasks.find(x => x.id === taskID);
+      if (!t) return;
+      let selectedID = state.user.id;
+      const activePeople = state.people.filter(p => p.is_active);
+
+      window._pickCompPerson = (pid) => {
+        selectedID = pid;
+        document.querySelectorAll('#compPersonGrid .person-opt').forEach(el => {
+          el.classList.toggle('selected', Number(el.dataset.pid) === selectedID);
+        });
+      };
+      window._confirmComp = async (btn) => {
+        btn.disabled = true;
+        try {
+          await api('/api/tasks/complete', {
+            method: 'POST',
+            body: JSON.stringify({ task_id: taskID, completed_by: selectedID })
+          });
+          closeSheet();
+          showToast('已确认完成');
+          loadTasks();
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+
+      openSheet(
+        '确认完成任务',
+        `<div style="margin-bottom:12px;">
+           <div style="font-size:16px;font-weight:700;">${esc(t.title)}</div>
+           <div style="font-size:13px;color:var(--sub);margin-top:2px;">岗位：${esc(t.post_name)} · 当值：${esc(t.current_assignee_name)}</div>
+         </div>
+         <div class="field">
+           <label>选择实际完成伙伴（默认本人，协助完成仍保留原当值记录）</label>
+           <div id="compPersonGrid" class="person-grid">
+             ${activePeople.map(p => `
+               <button type="button" class="person-opt ${p.id === selectedID ? 'selected' : ''}"
+                 data-pid="${p.id}" onclick="_pickCompPerson(${p.id})">
+                 <span>${esc(p.nickname)}</span>
+                 ${p.id === state.user.id ? '<span style="font-size:11px;">我</span>' : ''}
+               </button>
+             `).join('')}
+           </div>
+         </div>`,
+        `<button class="btn btn-primary btn-block" onclick="_confirmComp(this)">确认完成</button>`
+      );
+    }
+
+    function openNASheet(taskID) {
+      const t = state.tasks.find(x => x.id === taskID);
+      if (!t) return;
+      window._confirmNA = async (btn) => {
+        btn.disabled = true;
+        const note = document.getElementById('naNoteInput').value.trim();
+        try {
+          await api('/api/tasks/not-applicable', { method: 'POST', body: JSON.stringify({ task_id: taskID, note }) });
+          closeSheet();
+          showToast('已标记为当日无此项');
+          loadTasks();
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+      openSheet(
+        '标记「当日无此项」',
+        `<p style="margin:0 0 10px;font-size:14px;">确认今日无需执行 <strong>「${esc(t.title)}」</strong> 吗？</p>
+         <div class="field">
+           <label>备注说明（可选）</label>
+           <input id="naNoteInput" type="text" class="input" placeholder="如：今日休息/无对应业务" />
+         </div>`,
+        `<button class="btn btn-primary btn-block" onclick="_confirmNA(this)">确认标记</button>`
+      );
+    }
+
+    async function doRevertNA(taskID) {
+      try {
+        await api('/api/tasks/revert-na', { method: 'POST', body: JSON.stringify({ task_id: taskID }) });
+        showToast('已撤销无此项，恢复待办');
+        loadTasks();
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function openRevertCompSheet(taskID) {
+      window._confirmRevComp = async (btn) => {
+        btn.disabled = true;
+        try {
+          await api('/api/tasks/revert-complete', { method: 'POST', body: JSON.stringify({ task_id: taskID }) });
+          closeSheet();
+          showToast('已撤销完成');
+          loadTasks();
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+      openSheet(
+        '撤销完成确认',
+        `<p style="font-size:14px;margin:0;">确定回退为待完成状态吗？</p>`,
+        `<button class="btn btn-danger btn-block" onclick="_confirmRevComp(this)">确认回退</button>`
+      );
+    }
+
+    function openCancelAdhocSheet(taskID) {
+      window._confirmCancelAdhoc = async (btn) => {
+        btn.disabled = true;
+        try {
+          await api('/api/tasks/cancel', { method: 'POST', body: JSON.stringify({ task_id: taskID }) });
+          closeSheet();
+          showToast('临时任务已取消');
+          loadTasks();
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+      openSheet(
+        '取消临时任务',
+        `<p style="font-size:14px;margin:0;">确定取消该临时任务吗？</p>`,
+        `<button class="btn btn-danger btn-block" onclick="_confirmCancelAdhoc(this)">确认取消</button>`
+      );
+    }
+
+    // ==================== 3. 未完成交接单 ====================
+
+    async function loadHandoverView() {
+      try {
+        const [tRes, hRes] = await Promise.all([
+          api(`/api/tasks?date=${encodeURIComponent(state.businessDate)}&scope=pending`),
+          api(`/api/handovers?date=${encodeURIComponent(state.businessDate)}`)
+        ]);
+        state.tasks = tRes.tasks || [];
+        const validSet = new Set(state.tasks.map(t => t.id));
+        state.selectedHandoverIDs.forEach(id => { if (!validSet.has(id)) state.selectedHandoverIDs.delete(id); });
+        updateSelectedHandoverCount();
+        renderHandoverGroups(state.tasks);
+        renderHandoverHistory(hRes.records || []);
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function updateSelectedHandoverCount() {
+      document.getElementById('selHandoverCnt').textContent = state.selectedHandoverIDs.size;
+    }
+
+    function toggleSelectTask(id, checked) {
+      if (checked) state.selectedHandoverIDs.add(id);
+      else state.selectedHandoverIDs.delete(id);
+      updateSelectedHandoverCount();
+    }
+
+    function selectPostPending(postName) {
+      const groupTasks = state.tasks.filter(t => t.post_name === postName);
+      const allSelected = groupTasks.every(t => state.selectedHandoverIDs.has(t.id));
+      groupTasks.forEach(t => {
+        if (allSelected) state.selectedHandoverIDs.delete(t.id);
+        else state.selectedHandoverIDs.add(t.id);
+      });
+      updateSelectedHandoverCount();
+      renderHandoverGroups(state.tasks);
+    }
+
+    function renderHandoverGroups(tasks) {
+      const box = document.getElementById('handoverGroups');
+      if (!tasks.length) {
+        box.innerHTML = `<div class="card empty-state">今日所有岗位任务均已清零，暂无未完成待交接项</div>`;
+        return;
+      }
+      const groups = {};
+      tasks.forEach(t => {
+        if (!groups[t.post_name]) groups[t.post_name] = { color: t.post_color || '#007AFF', list: [] };
+        groups[t.post_name].list.push(t);
+      });
+
+      box.innerHTML = Object.entries(groups).map(([postName, g]) => `
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div style="font-weight:700;font-size:15px;display:flex;align-items:center;gap:6px;">
+              <span class="post-dot" style="background:${esc(g.color)};"></span>
+              <span>${esc(postName)}</span>
+              <span style="color:var(--orange);font-size:13px;margin-left:4px;">未完 ${g.list.length} 项</span>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="selectPostPending('${esc(postName)}')">全选本岗</button>
+          </div>
+          ${g.list.map(t => `
+            <label class="row-item" style="cursor:pointer;">
+              <div style="display:flex;align-items:center;gap:12px;flex:1;">
+                <input type="checkbox" style="width:22px;height:22px;"
+                  ${state.selectedHandoverIDs.has(t.id) ? 'checked' : ''}
+                  onchange="toggleSelectTask(${t.id}, this.checked)" />
+                <div>
+                  <div style="font-weight:600;font-size:15px;">${esc(t.title)}</div>
+                  <div style="font-size:12px;color:var(--sub);">当值伙伴：${esc(t.current_assignee_name)}</div>
+                </div>
+              </div>
+              <button type="button" class="sub-act-btn" onclick="event.preventDefault();openSingleHandoverSheet(${t.id})">交接</button>
+            </label>
+          `).join('')}
+        </div>
+      `).join('');
+    }
+
+    function renderHandoverHistory(records) {
+      const box = document.getElementById('handoverHistory');
+      if (!records.length) {
+        box.innerHTML = `<div style="font-size:13px;color:var(--sub);text-align:center;padding:10px;">今日暂无交接记录</div>`;
+        return;
+      }
+      box.innerHTML = records.map(r => `
+        <div class="row-item" style="font-size:13px;">
+          <div>
+            <strong>[${esc(r.post_name)}] ${esc(r.task_title)}</strong>
+            <div style="color:var(--sub);margin-top:2px;">
+              ${esc(r.from_name)} → <strong>${esc(r.to_name)}</strong>
+              （操作：${esc(r.operated_by_name)}${r.note ? ' · ' + esc(r.note) : ''}）
+            </div>
+          </div>
+          <span style="font-size:11px;color:var(--sub);">${esc((r.created_at || '').slice(11, 16))}</span>
+        </div>
+      `).join('');
+    }
+
+    function copyUnfinishedSummary() {
+      if (!state.tasks.length) return showToast('今日暂无未完成任务');
+      const lines = [`【${state.businessDate} 岗位交接未完清单】`];
+      const groups = {};
+      state.tasks.forEach(t => {
+        if (!groups[t.post_name]) groups[t.post_name] = [];
+        groups[t.post_name].push(t);
+      });
+      Object.entries(groups).forEach(([post, list]) => {
+        lines.push(`\n■ ${post}（${list.length}项）：`);
+        list.forEach((t, idx) => lines.push(`  ${idx + 1}. ${t.title}（原当值：${t.current_assignee_name}）`));
+      });
+      copyText(lines.join('\n'));
+    }
+
+    function openSingleHandoverSheet(taskID) { openHandoverModal([taskID]); }
+    function openBatchHandoverSheet() {
+      const ids = Array.from(state.selectedHandoverIDs);
+      if (!ids.length) return showToast('请先勾选需要交接的未完成任务');
+      openHandoverModal(ids);
+    }
+
+    function openHandoverModal(taskIDs) {
+      const activePeople = state.people.filter(p => p.is_active);
+      let targetID = activePeople[0] ? activePeople[0].id : 0;
+
+      window._pickHoPerson = (pid) => {
+        targetID = pid;
+        document.querySelectorAll('#hoPersonGrid .person-opt').forEach(el => {
+          el.classList.toggle('selected', Number(el.dataset.pid) === targetID);
+        });
+      };
+      window._confirmHandover = async (btn) => {
+        if (!targetID) return showToast('请选择接手伙伴');
+        btn.disabled = true;
+        const note = document.getElementById('hoNoteInput').value.trim();
+        try {
+          const res = await api('/api/tasks/handover', {
+            method: 'POST',
+            body: JSON.stringify({ task_ids: taskIDs, to_person_id: targetID, note })
+          });
+          closeSheet();
+          state.selectedHandoverIDs.clear();
+          showToast(`已交接 ${res.handed_over} 项任务`);
+          if (state.tab === 'handover') loadHandoverView();
+          else loadTasks();
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+
+      openSheet(
+        `交接任务（共 ${taskIDs.length} 项）`,
+        `<div class="field">
+           <label>选择接手伙伴</label>
+           <div id="hoPersonGrid" class="person-grid">
+             ${activePeople.map(p => `
+               <button type="button" class="person-opt ${p.id === targetID ? 'selected' : ''}"
+                 data-pid="${p.id}" onclick="_pickHoPerson(${p.id})">
+                 <span>${esc(p.nickname)}</span>
+               </button>
+             `).join('')}
+           </div>
+         </div>
+         <div class="field">
+           <label>交接说明（可选）</label>
+           <input id="hoNoteInput" type="text" class="input" placeholder="如：交接晚班继续跟进" />
+         </div>`,
+        `<button class="btn btn-primary btn-block" onclick="_confirmHandover(this)">确认交接</button>`
+      );
+    }
+
+    // ==================== 4. 主机管理台 ====================
+
+    async function renderAdminView() {
+      const activePeople = state.people.filter(p => p.is_active);
+      const activePosts = state.posts.filter(p => p.is_active);
+
+      document.getElementById('adhocPerson').innerHTML =
+        `<option value="0">-- 留空（根据岗位排班自动指派） --</option>` +
+        activePeople.map(p => `<option value="${p.id}">${esc(p.nickname)}</option>`).join('');
+
+      document.getElementById('adhocPost').innerHTML =
+        `<option value="0">-- 纯个人临时任务（不挂靠岗位） --</option>` +
+        activePosts.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+
+      document.getElementById('serverPortInput').value = state.port;
+      document.getElementById('lanUrlTxt').textContent = state.lanUrl;
+      document.getElementById('lanQrImg').src = `/api/qr?text=${encodeURIComponent(state.lanUrl)}`;
+      document.getElementById('procInfoTxt').textContent =
+        `当前进程：${state.processName} (PID: ${state.pid}) · 时区 Asia/Shanghai`;
+      renderBackupsList();
+
+      renderPostAdminList();
+      renderPersonAdminList();
+      await Promise.all([loadScheduleMatrix(false), loadTemplates(), loadHistoryBook(state.businessDate)]);
+    }
+
+    function renderBackupsList() {
+      const box = document.getElementById('backupFilesTxt');
+      box.textContent = (state.backups && state.backups.length)
+        ? state.backups.slice(0, 5).join(' 、 ')
+        : '暂无历史备份（点击上方按钮可立即生成）';
+    }
+
+    function submitAdhoc() {
+      if (state.adhocDebounceTimer) return;
+      const btn = document.getElementById('adhocSubmitBtn');
+      const title = document.getElementById('adhocTitle').value.trim();
+      const desc = document.getElementById('adhocDesc').value.trim();
+      const bizDate = document.getElementById('adhocDate').value || state.businessDate;
+      const pVal = Number(document.getElementById('adhocPerson').value);
+      const postVal = Number(document.getElementById('adhocPost').value);
+
+      if (!title) return showToast('请填写临时任务标题');
+      if (!pVal && !postVal) return showToast('请至少选择伙伴或关联岗位');
+
+      btn.disabled = true;
+      state.adhocDebounceTimer = setTimeout(() => { state.adhocDebounceTimer = null; }, 800);
+
+      api('/api/adhoc', {
+        method: 'POST',
+        body: JSON.stringify({
+          title, description: desc, business_date: bizDate,
+          assignee_id: pVal > 0 ? pVal : null,
+          post_id: postVal > 0 ? postVal : null
+        })
+      }).then(() => {
+        document.getElementById('adhocTitle').value = '';
+        document.getElementById('adhocDesc').value = '';
+        showToast('临时任务已派发');
+      }).catch(e => {
+        showToast(e.message);
+      }).finally(() => {
+        btn.disabled = false;
+      });
+    }
+
+    // 预排班矩阵
+    async function loadScheduleMatrix(withDraft) {
+      try {
+        const res = await api(`/api/admin/schedule?start=${encodeURIComponent(state.businessDate)}&days=7&draft=${withDraft ? '1' : '0'}`);
+        state.scheduleMatrix = res;
+        renderScheduleGrid(res.dates, res.entries, withDraft ? res.draft : null);
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function renderScheduleGrid(dates, entries, draft) {
+      const activePosts = state.posts.filter(p => p.is_active);
+      const activePeople = state.people.filter(p => p.is_active);
+
+      const map = {};
+      (entries || []).forEach(e => { map[`${e.schedule_date}_${e.post_id}`] = e.person_id; });
+      if (draft) {
+        draft.forEach(d => { map[`${d.schedule_date}_${d.post_id}`] = d.person_id; });
+      }
+
+      document.getElementById('schedThead').innerHTML = `
+        <tr>
+          <th>岗位 \\ 日期</th>
+          ${dates.map(d => {
+            const dt = new Date(d + 'T00:00:00');
+            const wName = WEEK_NAMES[dt.getDay()];
+            return `<th>${d.slice(5)}<br><span style="font-size:11px;color:var(--sub);">周${wName}</span></th>`;
+          }).join('')}
+        </tr>
+      `;
+
+      document.getElementById('schedTbody').innerHTML = activePosts.map(p => `
+        <tr>
+          <td>
+            <span class="post-dot" style="background:${esc(p.color)};"></span>
+            <span style="font-weight:700;">${esc(p.name)}</span>
+          </td>
+          ${dates.map(d => {
+            const val = map[`${d}_${p.id}`] || 0;
+            return `
+              <td>
+                <select class="sched-sel ${draft ? 'is-draft' : ''}" data-date="${d}" data-post="${p.id}">
+                  <option value="0">-- 待排 --</option>
+                  ${activePeople.map(pe => `<option value="${pe.id}" ${pe.id === val ? 'selected' : ''}>${esc(pe.nickname)}</option>`).join('')}
+                </select>
+              </td>
+            `;
+          }).join('')}
+        </tr>
+      `).join('');
+    }
+
+    async function generateRotaDraft() {
+      await loadScheduleMatrix(true);
+      showToast('已按「每人每天1岗」生成未来7天轮询草稿，检查后请点保存');
+    }
+
+    async function saveScheduleMatrix() {
+      const entries = [];
+      document.querySelectorAll('.sched-sel').forEach(sel => {
+        entries.push({
+          schedule_date: sel.dataset.date,
+          post_id: Number(sel.dataset.post),
+          person_id: Number(sel.value)
+        });
+      });
+      try {
+        await api('/api/admin/schedule', { method: 'POST', body: JSON.stringify({ entries }) });
+        showToast('排班表已保存');
+        loadScheduleMatrix(false);
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function openImportScheduleSheet() {
+      window._doImport = async (btn) => {
+        const text = document.getElementById('schedImportText').value.trim();
+        if (!text) return showToast('请输入或粘贴表格内容');
+        btn.disabled = true;
+        try {
+          const res = await api('/api/admin/schedule/import', { method: 'POST', body: JSON.stringify({ text }) });
+          closeSheet();
+          showToast(`成功导入 ${res.saved} 条排班记录`);
+          loadScheduleMatrix(false);
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+
+      openSheet(
+        '导入排班表',
+        `<p style="font-size:13px;color:var(--sub);margin:0 0 10px;">
+           支持从 Excel / 飞书表格复制粘贴二维矩阵（首行表头需为各岗位名称，第1列为日期 YYYY-MM-DD）。
+         </p>
+         <div class="field">
+           <label>排班文本（直接粘贴表格或选择文件）</label>
+           <textarea id="schedImportText" class="textarea" style="min-height:140px;font-family:monospace;font-size:12px;"
+             placeholder="日期,前台岗,库房岗&#10;2026-11-24,张三,李四&#10;2026-11-25,李四,王五"></textarea>
+         </div>
+         <input type="file" accept=".csv,.txt" onchange="readImportFile(this)" style="font-size:12px;" />`,
+        `<button class="btn btn-primary btn-block" onclick="_doImport(this)">确认导入</button>`
+      );
+    }
+
+    function readImportFile(input) {
+      const file = input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => { document.getElementById('schedImportText').value = reader.result; };
+      reader.readAsText(file);
+    }
+
+    async function manualGenerate() {
+      const btn = document.getElementById('manualGenBtn');
+      btn.disabled = true;
+      try {
+        const res = await api('/api/admin/generate', { method: 'POST', body: '{}' });
+        showToast(`补全检查完毕，新增周期任务 ${res.generated} 条`);
+      } catch (e) {
+        showToast(e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ==================== 📖 历史完成手账翻页阅读器 ====================
+
+    async function loadHistoryBook(date) {
+      try {
+        const page = await api(`/api/admin/history-book?date=${encodeURIComponent(date || '')}`);
+        state.historyBook = page;
+        renderHistoryBook(page);
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function renderHistoryBook(page) {
+      document.getElementById('bookDateTxt').textContent = page.date;
+      const total = page.tasks.length;
+      const done = (page.tasks || []).filter(t => t.status === 'completed' || t.status === 'not_applicable').length;
+      const isZero = total > 0 && done === total;
+
+      const stamp = document.getElementById('bookStampBadge');
+      if (total === 0) {
+        stamp.textContent = '本日无排期';
+        stamp.className = 'book-stamp';
+      } else if (isZero) {
+        stamp.textContent = '★ 全员清零';
+        stamp.className = 'book-stamp';
+      } else {
+        stamp.textContent = `待完 ${page.stats.pending} 项`;
+        stamp.className = 'book-stamp warn';
+      }
+
+      const schedSummary = (page.schedules || []).map(s => `${s.post_name}:${s.person_name}`).join(' · ');
+      document.getElementById('bookRotaSummary').textContent = schedSummary ? `当值排班：${schedSummary}` : '当日无排班记录';
+
+      const groups = {};
+      (page.tasks || []).forEach(t => {
+        const k = t.post_name || '临时任务';
+        if (!groups[k]) groups[k] = { color: t.post_color || '#1D1D1F', items: [] };
+        groups[k].items.push(t);
+      });
+
+      const grid = document.getElementById('bookComicGrid');
+      if (total === 0) {
+        grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:30px;color:var(--sub);">当日无任务派发记录</div>`;
+      } else {
+        grid.innerHTML = Object.entries(groups).map(([postName, g]) => `
+          <div class="comic-panel">
+            <div class="comic-panel-hdr" style="background:${esc(g.color)}14;border-color:#1D1D1F;">
+              <span style="display:flex;align-items:center;gap:6px;">
+                <span class="post-dot" style="background:${esc(g.color)};"></span>
+                <span>${esc(postName)}</span>
+              </span>
+              <span style="font-size:11px;color:var(--sub);">${g.items.length} 件事</span>
+            </div>
+            <div class="comic-panel-body">
+              ${g.items.map(t => {
+                let badgeTxt = '待完成';
+                let colorStyle = 'color:var(--orange);';
+                if (t.status === 'completed') {
+                  badgeTxt = `已完成 (${esc(t.completed_by_name)})`;
+                  colorStyle = 'color:var(--green);font-weight:700;';
+                } else if (t.status === 'not_applicable') {
+                  badgeTxt = '当日无此项';
+                  colorStyle = 'color:var(--sub);';
+                }
+                return `
+                  <div class="comic-item">
+                    <div style="font-weight:600;">${esc(t.title)}</div>
+                    <div style="font-size:11px;display:flex;justify-content:space-between;margin-top:2px;">
+                      <span style="color:var(--sub);">当值: ${esc(t.current_assignee_name)}</span>
+                      <span style="${colorStyle}">${badgeTxt}</span>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `).join('');
+      }
+
+      // 底部章节选话轴
+      const bar = document.getElementById('chapterStrip');
+      bar.innerHTML = (page.chapter_bar || []).map(dot => {
+        const dotColor = dot.pending === 0 ? 'var(--green)' : 'var(--orange)';
+        const isActive = dot.date === page.date;
+        return `
+          <button class="chapter-pill ${isActive ? 'active' : ''}" onclick="loadHistoryBook('${dot.date}')">
+            <span class="post-dot" style="background:${dotColor};"></span>
+            <span>${dot.date.slice(5)}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    function flipBook(dir) {
+      const target = dir === 'prev' ? state.historyBook.prev_date : state.historyBook.next_date;
+      if (!target) return showToast(dir === 'prev' ? '已经是第一页了' : '已经翻到最新日期了');
+
+      const stage = document.getElementById('bookStage');
+      stage.classList.add('flipping');
+      setTimeout(async () => {
+        await loadHistoryBook(target);
+        stage.classList.remove('flipping');
+      }, 160);
+    }
+
+    // 键盘左右箭头支持翻页
+    window.addEventListener('keydown', (e) => {
+      if (state.tab === 'admin') {
+        if (e.key === 'ArrowLeft') flipBook('prev');
+        else if (e.key === 'ArrowRight') flipBook('next');
+      }
+    });
+
+    // 触屏手势左右滑动翻页
+    let touchStartX = 0;
+    document.addEventListener('touchstart', (e) => { touchStartX = e.changedTouches[0].screenX; }, { passive: true });
+    document.addEventListener('touchend', (e) => {
+      if (state.tab !== 'admin') return;
+      const touchEndX = e.changedTouches[0].screenX;
+      if (touchEndX - touchStartX > 80) flipBook('prev');
+      else if (touchStartX - touchEndX > 80) flipBook('next');
+    }, { passive: true });
+
+    // ==================== 周期模板管理 ====================
+
+    async function loadTemplates() {
+      try {
+        const res = await api('/api/admin/templates');
+        state.templates = res.templates || [];
+        renderTemplateCategories();
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    function renderTemplateCategories() {
+      const box = document.getElementById('templateCategoryList');
+      if (!state.templates.length) {
+        box.innerHTML = `<div class="empty-state">暂无周期任务模板，点击右上角新增</div>`;
+        return;
+      }
+
+      const cats = { daily: { name: '每日任务', items: [] }, weekly: { name: '每周任务', items: [] }, monthly: { name: '每月任务', items: [] } };
+      state.templates.forEach(t => {
+        if (cats[t.cycle_type]) cats[t.cycle_type].items.push(t);
+      });
+
+      box.innerHTML = Object.entries(cats).map(([cKey, c]) => {
+        if (!c.items.length) return '';
+        // 类别下按岗位二级归类
+        const byPost = {};
+        c.items.forEach(t => {
+          if (!byPost[t.post_id]) byPost[t.post_id] = { name: t.post_name, color: t.post_color, items: [] };
+          byPost[t.post_id].items.push(t);
+        });
+
+        return `
+          <div class="tmpl-cycle-section">
+            <div class="tmpl-cycle-title">
+              <span>● ${esc(c.name)}</span>
+              <span style="font-size:12px;color:var(--sub);font-weight:normal;">(${c.items.length} 条)</span>
+            </div>
+            ${Object.entries(byPost).map(([_, pg]) => `
+              <div class="tmpl-post-block">
+                <div class="tmpl-post-header" style="color:${esc(pg.color)};">
+                  <span class="post-dot" style="background:${esc(pg.color)};"></span>
+                  <span>${esc(pg.name)}</span>
+                </div>
+                ${pg.items.map(t => {
+                  let scheduleDetail = '';
+                  if (t.cycle_type === 'weekly') {
+                    const days = (t.weekdays || '').split(',').map(n => '周' + WEEK_NAMES[Number(n)]).join('、');
+                    scheduleDetail = `<span class="badge">${days}</span>`;
+                  } else if (t.cycle_type === 'monthly') {
+                    scheduleDetail = `<span class="badge">每月 ${esc(t.month_days)} 日 (月末自适应)</span>`;
+                  }
+                  return `
+                    <div class="row-item" style="padding:6px 0;${t.is_active ? '' : 'opacity:0.5;'}">
+                      <div>
+                        <strong>${esc(t.title)}</strong>
+                        ${scheduleDetail}
+                        ${t.description ? `<div style="font-size:12px;color:var(--sub);">${esc(t.description)}</div>` : ''}
+                      </div>
+                      <button class="btn btn-gray btn-sm" onclick="openTemplateSheet(${t.id})">编辑</button>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function openTemplateSheet(id = 0) {
+      const activePosts = state.posts.filter(p => p.is_active);
+      if (!activePosts.length) return showToast('请先新增至少一个岗位');
+      const t = state.templates.find(x => x.id === id) || {
+        id: 0, post_id: activePosts[0].id, title: '', description: '',
+        cycle_type: 'daily', weekdays: '1,3,5', month_days: '1,15,31', is_active: true
+      };
+
+      const selectedWeekdays = new Set((t.weekdays || '').split(',').filter(Boolean).map(Number));
+
+      window._toggleWeekday = (day) => {
+        if (selectedWeekdays.has(day)) selectedWeekdays.delete(day);
+        else selectedWeekdays.add(day);
+        document.querySelectorAll('#weekChipGroup .day-chip').forEach(el => {
+          el.classList.toggle('selected', selectedWeekdays.has(Number(el.dataset.day)));
+        });
+      };
+
+      window._onCycleChange = () => {
+        const c = document.getElementById('tmplCycle').value;
+        document.getElementById('tmplWeekWrap').classList.toggle('hidden', c !== 'weekly');
+        document.getElementById('tmplMonthWrap').classList.toggle('hidden', c !== 'monthly');
+      };
+
+      window._saveTmpl = async (btn) => {
+        btn.disabled = true;
+        const cycle = document.getElementById('tmplCycle').value;
+        const payload = {
+          id: t.id,
+          post_id: Number(document.getElementById('tmplPost').value),
+          title: document.getElementById('tmplTitle').value.trim(),
+          description: document.getElementById('tmplDesc').value.trim(),
+          cycle_type: cycle,
+          weekdays: Array.from(selectedWeekdays).sort((a,b)=>a-b).join(','),
+          month_days: document.getElementById('tmplMonthDays').value.trim(),
+          is_active: t.id === 0 ? true : document.getElementById('tmplActive').checked
+        };
+        try {
+          await api('/api/admin/templates', { method: 'POST', body: JSON.stringify(payload) });
+          closeSheet();
+          showToast('模板已保存');
+          loadTemplates();
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+
+      openSheet(
+        t.id ? '编辑任务模板' : '新增周期任务模板',
+        `<div class="field">
+           <label>归属岗位</label>
+           <select id="tmplPost" class="select">
+             ${state.posts.map(p => `<option value="${p.id}" ${p.id === t.post_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+           </select>
+         </div>
+         <div class="field">
+           <label>任务名称</label>
+           <input id="tmplTitle" type="text" class="input" value="${esc(t.title)}" placeholder="如：闭店安全巡检" />
+         </div>
+         <div class="field">
+           <label>周期类型</label>
+           <select id="tmplCycle" class="select" onchange="_onCycleChange()">
+             <option value="daily" ${t.cycle_type === 'daily' ? 'selected' : ''}>每日任务 (每天 00:05 派发)</option>
+             <option value="weekly" ${t.cycle_type === 'weekly' ? 'selected' : ''}>每周多天 (如周一、周三、周五)</option>
+             <option value="monthly" ${t.cycle_type === 'monthly' ? 'selected' : ''}>每月多天 (如1、15、31日，月末自动收敛)</option>
+           </select>
+         </div>
+         <div id="tmplWeekWrap" class="field ${t.cycle_type === 'weekly' ? '' : 'hidden'}">
+           <label>选择每周哪几天执行（多选）</label>
+           <div id="weekChipGroup" class="chip-group">
+             ${[1, 2, 3, 4, 5, 6, 0].map(d => `
+               <button type="button" class="day-chip ${selectedWeekdays.has(d) ? 'selected' : ''}"
+                 data-day="${d}" onclick="_toggleWeekday(${d})">周${WEEK_NAMES[d]}</button>
+             `).join('')}
+           </div>
+         </div>
+         <div id="tmplMonthWrap" class="field ${t.cycle_type === 'monthly' ? '' : 'hidden'}">
+           <label>每月执行日期（1~31，逗号分隔多天，遇到28/29/30天月末自动派发）</label>
+           <input id="tmplMonthDays" type="text" class="input" value="${esc(t.month_days || '1,15,31')}" placeholder="如：1, 15, 31" />
+         </div>
+         <div class="field">
+           <label>补充要求（可选）</label>
+           <textarea id="tmplDesc" class="textarea">${esc(t.description)}</textarea>
+         </div>
+         ${t.id ? `<label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+           <input id="tmplActive" type="checkbox" style="width:20px;height:20px;" ${t.is_active ? 'checked' : ''} /> 启用中（取消为软停用）
+         </label>` : ''}`,
+        `<button class="btn btn-primary btn-block" onclick="_saveTmpl(this)">保存模板</button>`
+      );
+    }
+
+    // ==================== 岗位与人员配置 ====================
+
+    function renderPostAdminList() {
+      const box = document.getElementById('postAdminList');
+      box.innerHTML = state.posts.map(p => `
+        <div class="row-item" style="${p.is_active ? '' : 'opacity:0.5;'}">
+          <div>
+            <span class="post-dot" style="background:${esc(p.color)};"></span>
+            <strong>${esc(p.name)}</strong>
+            <span style="font-size:12px;color:var(--sub);margin-left:4px;">#${p.sort_order} ${p.is_active ? '' : '(已停用)'}</span>
+          </div>
+          <button class="btn btn-gray btn-sm" onclick="openPostSheet(${p.id})">编辑</button>
+        </div>
+      `).join('');
+    }
+
+    function openPostSheet(id = 0) {
+      const p = state.posts.find(x => x.id === id) || { id: 0, name: '', color: '#007AFF', sort_order: 10, is_active: true };
+      let selColor = p.color;
+
+      window._pickColor = (c) => {
+        selColor = c;
+        document.querySelectorAll('#colorPickerBox .color-swatch').forEach(s => {
+          s.classList.toggle('selected', s.dataset.color === c);
+        });
+      };
+      window._savePost = async (btn) => {
+        btn.disabled = true;
+        try {
+          await api('/api/admin/posts', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: p.id,
+              name: document.getElementById('postNameIn').value.trim(),
+              color: selColor,
+              sort_order: Number(document.getElementById('postSortIn').value) || 0,
+              is_active: p.id === 0 ? true : document.getElementById('postActiveIn').checked
+            })
+          });
+          closeSheet();
+          await initApp();
+          showToast('岗位已保存');
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+
+      openSheet(
+        p.id ? '编辑岗位' : '新增岗位',
+        `<div class="field">
+           <label>岗位名称</label>
+           <input id="postNameIn" type="text" class="input" value="${esc(p.name)}" placeholder="如：收银岗 / 巡检岗" />
+         </div>
+         <div class="field">
+           <label>专属色标（区分各岗卡片与标签）</label>
+           <div id="colorPickerBox" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
+             ${PALETTE.map(c => `
+               <button type="button" class="color-swatch ${c === selColor ? 'selected' : ''}"
+                 data-color="${c}" style="background:${c};" onclick="_pickColor('${c}')"></button>
+             `).join('')}
+           </div>
+         </div>
+         <div class="field">
+           <label>排序号（越小越靠前）</label>
+           <input id="postSortIn" type="number" class="input" value="${p.sort_order}" />
+         </div>
+         ${p.id ? `<label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+           <input id="postActiveIn" type="checkbox" style="width:20px;height:20px;" ${p.is_active ? 'checked' : ''} /> 启用该岗位
+         </label>` : ''}`,
+        `<button class="btn btn-primary btn-block" onclick="_savePost(this)">保存岗位</button>`
+      );
+    }
+
+    function renderPersonAdminList() {
+      const box = document.getElementById('personAdminList');
+      box.innerHTML = state.people.map(p => `
+        <div class="row-item" style="${p.is_active ? '' : 'opacity:0.5;'}">
+          <div>
+            <strong>${esc(p.nickname)}</strong>
+            ${p.is_admin ? '<span class="badge" style="background:#EAF3FF;color:var(--blue);margin-left:4px;">管理员</span>' : ''}
+            ${p.has_password ? '<span class="badge" style="margin-left:4px;">密码</span>' : '<span class="badge" style="margin-left:4px;">免密</span>'}
+            ${p.in_rota ? '<span class="badge" style="margin-left:4px;">轮询</span>' : ''}
+          </div>
+          <div style="display:flex;gap:6px;">
+            ${p.is_active ? `<button class="btn btn-secondary btn-sm" onclick="openPersonQrSheet('${esc(p.nickname)}')">扫码码</button>` : ''}
+            <button class="btn btn-gray btn-sm" onclick="openPersonSheet(${p.id})">编辑</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function openPersonQrSheet(nickname) {
+      const link = `${state.lanUrl}/quick-login?u=${encodeURIComponent(nickname)}`;
+      openSheet(
+        `${nickname} 的专属扫码码`,
+        `<div style="text-align:center;">
+           <img src="/api/qr?user=${encodeURIComponent(nickname)}" style="width:200px;height:200px;border:1px solid var(--line);border-radius:16px;padding:8px;background:#FFF;" />
+           <p style="font-size:13px;color:var(--sub);margin:10px 0 4px;">
+             手机连接同一 WiFi 扫码直接登录（若设置了密码扫码后仍需输入密码验证）。
+           </p>
+         </div>`,
+        `<button class="btn btn-secondary btn-block" onclick="copyText('${esc(link)}')">复制专属登录链接</button>`
+      );
+    }
+
+    function openPersonSheet(id = 0) {
+      const p = state.people.find(x => x.id === id) || { id: 0, nickname: '', is_admin: false, in_rota: true, is_active: true };
+      window._savePerson = async (btn) => {
+        btn.disabled = true;
+        const pwd = document.getElementById('perPwdIn').value;
+        const clearPwd = document.getElementById('perClearPwdIn') ? document.getElementById('perClearPwdIn').checked : false;
+        try {
+          await api('/api/admin/people', {
+            method: 'POST',
+            body: JSON.stringify({
+              id: p.id,
+              nickname: document.getElementById('perNameIn').value.trim(),
+              password: pwd,
+              clear_password: clearPwd,
+              is_admin: document.getElementById('perAdminIn').checked,
+              in_rota: document.getElementById('perRotaIn').checked,
+              is_active: p.id === 0 ? true : document.getElementById('perActiveIn').checked
+            })
+          });
+          closeSheet();
+          await initApp();
+          showToast('人员信息已保存');
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+
+      openSheet(
+        p.id ? '编辑人员' : '新增人员',
+        `<div class="field">
+           <label>姓名 / 昵称</label>
+           <input id="perNameIn" type="text" class="input" value="${esc(p.nickname)}" placeholder="输入姓名" />
+         </div>
+         <div class="field">
+           <label>登录密码（普通成员可留空免密，管理员必填）</label>
+           <input id="perPwdIn" type="password" class="input" placeholder="${p.id ? '留空保持原密码不变' : '可留空免密'}" />
+         </div>
+         ${p.id && !p.is_admin ? `<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:10px;">
+           <input id="perClearPwdIn" type="checkbox" style="width:18px;height:18px;" /> 清除该人员密码（改为免密登录）
+         </label>` : ''}
+         <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:8px;">
+           <input id="perRotaIn" type="checkbox" style="width:18px;height:18px;" ${p.in_rota ? 'checked' : ''} /> 参与自动轮询排班（管理员默认可不参与）
+         </label>
+         <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:8px;">
+           <input id="perAdminIn" type="checkbox" style="width:18px;height:18px;" ${p.is_admin ? 'checked' : ''} /> 设为主机管理员
+         </label>
+         ${p.id ? `<label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+           <input id="perActiveIn" type="checkbox" style="width:18px;height:18px;" ${p.is_active ? 'checked' : ''} /> 在职启用中
+         </label>` : ''}`,
+        `<button class="btn btn-primary btn-block" onclick="_savePerson(this)">保存人员</button>`
+      );
+    }
+
+    async function updateServerPort() {
+      const port = document.getElementById('serverPortInput').value.trim();
+      if (!port) return showToast('请输入端口号');
+      try {
+        const res = await api('/api/admin/port', { method: 'POST', body: JSON.stringify({ port }) });
+        state.port = res.port;
+        state.lanUrl = res.lan_url;
+        document.getElementById('lanUrlTxt').textContent = state.lanUrl;
+        document.getElementById('lanQrImg').src = `/api/qr?text=${encodeURIComponent(state.lanUrl)}`;
+        showToast('端口已修改并重新绑定成功！');
+      } catch (e) {
+        showToast(e.message);
+      }
+    }
+
+    async function triggerBackup() {
+      const btn = document.getElementById('backupNowBtn');
+      btn.disabled = true;
+      try {
+        const res = await api('/api/admin/backup', { method: 'POST', body: '{}' });
+        state.backups = res.backups || [];
+        renderBackupsList();
+        showToast('备份成功且通过完整性校验：' + res.file);
+      } catch (e) {
+        showToast(e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ==================== 抽屉与剪贴板工具 ====================
+
+    function openSheet(title, bodyHTML, footerHTML) {
+      document.getElementById('sheetTitle').textContent = title;
+      document.getElementById('sheetBody').innerHTML = bodyHTML;
+      document.getElementById('sheetFooter').innerHTML = footerHTML || '';
+      document.getElementById('sheetBackdrop').classList.add('open');
+    }
+
+    function closeSheet() {
+      document.getElementById('sheetBackdrop').classList.remove('open');
+    }
+
+    function onBackdropClick(e) {
+      if (e.target.id === 'sheetBackdrop') closeSheet();
+    }
+
+    function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => showToast('已复制到剪贴板')).catch(() => fallbackCopy(text));
+      } else {
+        fallbackCopy(text);
+      }
+    }
+
+    function fallbackCopy(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast('已复制到剪贴板');
+      } catch (_) {
+        showToast('复制失败，请手动长按复制');
+      }
+      document.body.removeChild(ta);
+    }
+
+    initApp();
+  </script>
+</body>
+</html>
