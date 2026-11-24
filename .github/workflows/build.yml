@@ -1,0 +1,67 @@
+name: Build & Test Single Binary
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Tidy Dependencies
+        run: go mod tidy
+
+      - name: Run Unit Tests
+        run: go test -v -race ./...
+
+      - name: Build Windows AMD64 (System Tray, No Console Window)
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: go build -trimpath -ldflags="-s -w -H=windowsgui" -o dist/taskhub-windows-amd64.exe .
+
+      - name: Build Linux AMD64
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: go build -trimpath -ldflags="-s -w" -o dist/taskhub-linux-amd64 .
+
+      - name: Build Linux ARM64
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: 0
+        run: go build -trimpath -ldflags="-s -w" -o dist/taskhub-linux-arm64 .
+
+      - name: Build macOS Apple Silicon (ARM64)
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: 0
+        run: go build -trimpath -ldflags="-s -w" -o dist/taskhub-darwin-arm64 .
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskhub-binaries
+          path: dist/*
+          retention-days: 30
+
+      - name: Create GitHub Release (On Tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
