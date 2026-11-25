@@ -105,7 +105,6 @@ func (m *HTTPManager) StartOnPort(port string) error {
 	if err != nil || pNum < 1 || pNum > 65535 {
 		return fmt.Errorf("端口号必须在 1~65535 之间")
 	}
-	// 默认监听全网卡以供局域网手机访问；若因极端组策略失败，提示明确原因
 	ln, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
 		return fmt.Errorf("无法绑定端口 %s（可能已被其他软件占用）: %w", port, err)
@@ -232,7 +231,6 @@ func main() {
 
 	activeURLFile := filepath.Join(*dataDir, "active.url")
 
-	// 命令行直接执行管理员密码重置模式（无需启动 HTTP，即使主实例在跑也可通过 SQLite WAL 安全写入）
 	if *resetAdminPwd {
 		loc, _ := time.LoadLocation(*tzName)
 		if loc == nil {
@@ -254,7 +252,6 @@ func main() {
 		return
 	}
 
-	// 单实例运行检测：若已有实例正在运行，直接打开对应网页并立即退出当前重复进程
 	releaseLock, alreadyRunning := acquireSingleInstance(*dataDir, activeURLFile)
 	if alreadyRunning {
 		openBrowser(resolveExistingInstanceURL(activeURLFile))
@@ -292,19 +289,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 支持物理文件触发重置密码：若 data/ 目录下存在 RESET_ADMIN_PASSWORD 文件，自动重置并删除该文件
 	resetTriggerFile := filepath.Join(*dataDir, "RESET_ADMIN_PASSWORD")
-	if _, err := os.Stat(resetTriggerFile); err == nil {
-		if rErr := store.ResetAdminPasswords(ctx); rErr == nil {
-			_ = os.Remove(resetTriggerFile)
-			slog.Warn("检测到物理重置文件 RESET_ADMIN_PASSWORD，已将管理员密码重置为 admin123")
-		}
-	}
-	for _, ext := range []string{".txt", ".flag"} {
-		if _, err := os.Stat(resetTriggerFile + ext); err == nil {
+	for _, suffix := range []string{"", ".txt", ".flag"} {
+		target := resetTriggerFile + suffix
+		if _, err := os.Stat(target); err == nil {
 			if rErr := store.ResetAdminPasswords(ctx); rErr == nil {
-				_ = os.Remove(resetTriggerFile + ext)
-				slog.Warn("检测到物理重置文件，已将管理员密码重置为 admin123")
+				_ = os.Remove(target)
+				slog.Warn("检测到物理重置文件，已将管理员密码重置为 admin123", "file", filepath.Base(target))
 			}
 		}
 	}
@@ -315,12 +306,12 @@ func main() {
 		_ = store.SetSavedPort(ctx, port)
 	}
 
-	// 启动补偿：立即检查补齐今日周期任务及昨日遗留的“次日接班复核”任务
+	// 启动补偿：立即生成今日周期任务，并自动跨假期衔接最近一个营业日的待复核重要任务
 	now := time.Now().In(loc)
 	if genCount, err := store.GeneratePeriodicTasks(ctx, now); err != nil {
 		slog.Error("启动补偿生成任务失败", "err", err)
 	} else if genCount > 0 {
-		slog.Info("启动补偿生成周期与复核任务完成", "generated", genCount)
+		slog.Info("启动补偿生成周期与跨日复核任务完成", "generated", genCount)
 	}
 
 	app := NewServer(store, port, logger)
@@ -352,7 +343,6 @@ func main() {
 		"lan_url", fmt.Sprintf("http://%s:%s", detectLANIP(), port),
 	)
 
-	// 手动双击启动时，默认自动弹出浏览器打开管理页（开机静默自启或显式 -no-open 时不打扰）
 	if !*noOpen && !*autoStartMode {
 		go func() {
 			time.Sleep(220 * time.Millisecond)
@@ -412,44 +402,52 @@ func main() {
 	}
 }
 
+// runScheduler 支持放假停机数日后重启、以及夜间电脑睡眠白天唤醒的自动补偿调度
 func runScheduler(ctx context.Context, store *Store, loc *time.Location, logger *slog.Logger) {
+	// 启动后 15 秒先检查一次：若因放假停机或夜间关机错过了凌晨 03:00 的备份，且今天是新的一天（>=03:00），自动补做一次维护与备份
+	initTimer := time.NewTimer(15 * time.Second)
+	defer initTimer.Stop()
+
 	ticker := time.NewTicker(45 * time.Second)
 	defer ticker.Stop()
 
-	lastGenDate := ""
-	lastMaintDate := ""
+	checkAndRun := func() {
+		if ctx.Err() != nil {
+			return
+		}
+		now := time.Now().In(loc)
+		today := now.Format("2006-01-02")
+
+		// 1. 每日 00:05 之后（含电脑从睡眠唤醒跨天）自动检查生成今日周期及复核任务
+		if (now.Hour() > 0 || (now.Hour() == 0 && now.Minute() >= 5)) && store.GetLastPeriodicGenDate(ctx) != today {
+			n, err := store.GeneratePeriodicTasks(ctx, now)
+			if err != nil {
+				logger.Error("定时生成周期及复核任务失败", "date", today, "err", err)
+			} else {
+				logger.Info("定时周期与次日复核任务检查完成", "date", today, "generated", n)
+			}
+		}
+
+		// 2. 每日 03:00 之后若今日尚未备份（无论 3 点整在线还是白天刚开机），自动执行一次垃圾清理与数据库安全备份
+		if now.Hour() >= 3 && store.GetLastBackupDate(ctx) != today {
+			_ = store.RunDailyMaintenance(ctx, now)
+			backupFile, err := store.PerformBackup(ctx, now)
+			if err != nil {
+				logger.Error("每日自动备份失败", "date", today, "err", err)
+			} else {
+				logger.Info("每日自动维护与备份完整性校验成功", "file", backupFile)
+			}
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-initTimer.C:
+			checkAndRun()
 		case <-ticker.C:
-			if ctx.Err() != nil {
-				return
-			}
-			now := time.Now().In(loc)
-			today := now.Format("2006-01-02")
-
-			if (now.Hour() > 0 || (now.Hour() == 0 && now.Minute() >= 5)) && lastGenDate != today {
-				n, err := store.GeneratePeriodicTasks(ctx, now)
-				if err != nil {
-					logger.Error("定时生成周期及复核任务失败", "date", today, "err", err)
-				} else {
-					lastGenDate = today
-					logger.Info("定时周期与次日复核任务检查完成", "date", today, "generated", n)
-				}
-			}
-
-			if now.Hour() == 3 && lastMaintDate != today {
-				_ = store.RunDailyMaintenance(ctx, now)
-				backupFile, err := store.PerformBackup(ctx, now)
-				if err != nil {
-					logger.Error("每日自动备份失败", "date", today, "err", err)
-				} else {
-					lastMaintDate = today
-					logger.Info("每日自动维护与备份完整性校验成功", "file", backupFile)
-				}
-			}
+			checkAndRun()
 		}
 	}
 }
