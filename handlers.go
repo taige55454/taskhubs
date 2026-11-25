@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,9 +15,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
-const sessionCookieName = "taskhub_sid"
+const (
+	sessionCookieName = "taskhub_sid"
+	maxJSONBodyBytes  = 2 << 20 // 2MB 上限防恶意大包打满内存
+)
+
+type loginAttempt struct {
+	fails     int
+	lockUntil time.Time
+	lastSeen  time.Time
+}
 
 type Server struct {
 	mu          sync.RWMutex
@@ -24,13 +35,17 @@ type Server struct {
 	port        string
 	portChanger func(newPort string) error
 	logger      *slog.Logger
+
+	rateMu   sync.Mutex
+	attempts map[string]*loginAttempt
 }
 
 func NewServer(store *Store, port string, logger *slog.Logger) *Server {
 	return &Server{
-		store:  store,
-		port:   port,
-		logger: logger,
+		store:    store,
+		port:     port,
+		logger:   logger,
+		attempts: make(map[string]*loginAttempt),
 	}
 }
 
@@ -50,6 +65,59 @@ func (s *Server) GetPort() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.port
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func (s *Server) checkLoginAllowed(ip string) (bool, int) {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	now := time.Now()
+	// 顺带懒清理超过 30 分钟无活动的 IP 记录，防内存泄漏
+	if len(s.attempts) > 128 {
+		for k, v := range s.attempts {
+			if now.Sub(v.lastSeen) > 30*time.Minute {
+				delete(s.attempts, k)
+			}
+		}
+	}
+	rec, ok := s.attempts[ip]
+	if !ok {
+		return true, 0
+	}
+	rec.lastSeen = now
+	if now.Before(rec.lockUntil) {
+		waitSec := int(rec.lockUntil.Sub(now).Seconds()) + 1
+		return false, waitSec
+	}
+	return true, 0
+}
+
+func (s *Server) recordLoginResult(ip string, success bool) {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	if success {
+		delete(s.attempts, ip)
+		return
+	}
+	now := time.Now()
+	rec, ok := s.attempts[ip]
+	if !ok {
+		rec = &loginAttempt{}
+		s.attempts[ip] = rec
+	}
+	rec.fails++
+	rec.lastSeen = now
+	if rec.fails >= 6 {
+		rec.lockUntil = now.Add(60 * time.Second)
+		rec.fails = 0
+	}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -73,7 +141,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/tasks/handover", s.withAuth(s.handleHandover, false))
 	mux.HandleFunc("GET /api/handovers", s.withAuth(s.handleListHandovers, false))
 
-	// 主机管理端专属接口
 	mux.HandleFunc("POST /api/adhoc", s.withAuth(s.handleCreateAdhoc, true))
 	mux.HandleFunc("POST /api/admin/generate", s.withAuth(s.handleManualGenerate, true))
 	mux.HandleFunc("GET /api/admin/schedule", s.withAuth(s.handleGetSchedule, true))
@@ -96,7 +163,15 @@ func (s *Server) Routes() http.Handler {
 		fileServer.ServeHTTP(w, r)
 	}))
 
-	return mux
+	// 统一安全中间件：防点击劫持、防 MIME 嗅探、限制请求体体积
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, sess *SessionInfo)
@@ -204,23 +279,33 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"business_date":     s.store.TodayStr(),
-		"timezone":          s.store.loc.String(),
-		"port":              port,
-		"lan_ip":            lanIP,
-		"lan_url":           lanBase,
-		"process_name":      filepath.Base(exe),
-		"pid":               os.Getpid(),
-		"default_admin_pwd": s.store.IsUsingDefaultAdminPwd(r.Context()),
-		"current_user":      currUser,
-		"csrf_token":        csrf,
-		"people":            peopleAll,
-		"posts":             postsAll,
-		"backups":           backups,
+		"business_date":      s.store.TodayStr(),
+		"current_month":      s.store.Now().Format("2006-01"),
+		"fixed_review_color": FixedReviewColor,
+		"timezone":           s.store.loc.String(),
+		"port":               port,
+		"lan_ip":             lanIP,
+		"lan_url":            lanBase,
+		"process_name":       filepath.Base(exe),
+		"pid":                os.Getpid(),
+		"default_admin_pwd":  s.store.IsUsingDefaultAdminPwd(r.Context()),
+		"current_user":       currUser,
+		"csrf_token":         csrf,
+		"people":             peopleAll,
+		"posts":              postsAll,
+		"backups":            backups,
 	})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if allowed, waitSec := s.checkLoginAllowed(ip); !allowed {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": fmt.Sprintf("密码尝试过于频繁，请等待 %d 秒后再试", waitSec),
+		})
+		return
+	}
+
 	var req struct {
 		Nickname string `json:"nickname"`
 		Password string `json:"password"`
@@ -231,9 +316,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, err := s.store.Login(r.Context(), req.Nickname, req.Password)
 	if err != nil {
+		if errors.Is(err, ErrAuthFailed) {
+			s.recordLoginResult(ip, false)
+		}
 		writeJSON(w, mapErrStatus(err), map[string]any{"error": err.Error()})
 		return
 	}
+	s.recordLoginResult(ip, true)
 	setSessionCookie(w, sess.Token)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":       sess.Person,
@@ -244,7 +333,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleQuickLogin(w http.ResponseWriter, r *http.Request) {
 	nickname := strings.TrimSpace(r.URL.Query().Get("u"))
 	if nickname != "" {
-		// 仅未设密码的普通成员可直接免密扫码登录；已设密码或管理员跳转登录页唤起密码框
 		if s.store.CanPasswordlessQuickLogin(r.Context(), nickname) {
 			if sess, err := s.store.Login(r.Context(), nickname, ""); err == nil {
 				setSessionCookie(w, sess.Token)
@@ -621,7 +709,7 @@ func (s *Server) handleChangePort(w http.ResponseWriter, r *http.Request, sess *
 	})
 }
 
-// ==================== 纯 Go 零依赖 QR Code SVG 生成器 ====================
+// ==================== QR Code SVG ====================
 
 func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 	port := s.GetPort()
