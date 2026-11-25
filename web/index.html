@@ -79,6 +79,7 @@
     .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
     .btn-primary { background: var(--blue); color: #FFF; }
     .btn-secondary { background: #EEF4FF; color: var(--blue); }
+    .btn-amber { background: #FEF3C7; color: #B45309; }
     .btn-gray { background: var(--pill-bg); color: var(--text); }
     .btn-danger { background: rgba(255, 59, 48, 0.12); color: var(--red); }
     .btn-sm { min-height: 36px; padding: 0 12px; font-size: 13px; border-radius: 10px; }
@@ -93,7 +94,6 @@
     .input:focus, .select:focus, .textarea:focus { border-color: var(--blue); background: #FFF; }
     .textarea { min-height: 76px; resize: vertical; }
 
-    /* 岗位分区块与色彩标签 */
     .post-group {
       background: var(--card); border-radius: 18px; padding: 14px;
       margin-bottom: 14px; box-shadow: var(--shadow); border: 1px solid rgba(0,0,0,0.04);
@@ -109,7 +109,6 @@
     }
     .post-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 
-    /* 任务卡片 & 次日接班复核专属卡片排版 */
     .task-card {
       background: #FAFAFC; border-radius: 14px; padding: 13px 13px 11px 15px;
       margin-bottom: 8px; display: flex; align-items: flex-start; gap: 12px;
@@ -169,7 +168,6 @@
     .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
     .filter-bar .input, .filter-bar .select { width: auto; flex: 1; min-width: 135px; min-height: 40px; padding: 6px 10px; font-size: 14px; background: var(--card); }
 
-    /* 预排班矩阵网格 */
     .sched-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: #FFF; }
     .sched-grid { width: 100%; border-collapse: collapse; min-width: 620px; font-size: 13px; }
     .sched-grid th, .sched-grid td { padding: 8px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); text-align: center; }
@@ -181,7 +179,6 @@
     }
     .sched-sel.is-draft { border-color: var(--blue); background: #F0F7FF; color: var(--blue); }
 
-    /* 📖 翻页式历史完成手账 */
     .book-stage {
       background: #FDFCF9; border-radius: 22px;
       box-shadow: 0 10px 30px rgba(0,0,0,0.08), inset 0 0 0 1px rgba(0,0,0,0.06);
@@ -221,7 +218,6 @@
     }
     .chapter-pill.active { background: #1D1D1F; color: #FFF; border-color: #1D1D1F; }
 
-    /* 多选星期胶囊 & 自由调色盘 */
     .chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
     .day-chip {
       min-width: 46px; min-height: 40px; padding: 0 10px; border-radius: 10px;
@@ -237,7 +233,6 @@
       padding: 8px 12px; border-radius: 12px; background: #F5F5F7; flex-wrap: wrap;
     }
 
-    /* 底部抽屉弹窗 */
     .sheet-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.36); z-index: 100;
       opacity: 0; pointer-events: none; transition: opacity 0.22s ease;
@@ -343,7 +338,7 @@
         <div id="loginPwdWrap" class="field hidden">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
             <label id="loginPwdLabel" style="margin:0;">登录密码</label>
-            <button type="button" style="border:none;background:none;color:var(--blue);font-size:12px;font-weight:600;cursor:pointer;padding:0;" onclick="openForgotAdminPwdHelp()">忘记管理员密码？</button>
+            <button id="forgotPwdLinkBtn" type="button" style="border:none;background:none;color:var(--blue);font-size:12px;font-weight:600;cursor:pointer;padding:0;" onclick="openForgotPwdHelp()">忘记密码？</button>
           </div>
           <input id="loginPasswordInput" type="password" autocomplete="current-password" class="input" placeholder="请输入登录密码" onkeydown="if(event.key==='Enter')doLogin()" />
         </div>
@@ -371,7 +366,6 @@
           </div>
         </div>
       </div>
-
       <div id="tasksList"></div>
     </section>
 
@@ -389,7 +383,6 @@
           </div>
         </div>
       </div>
-
       <div id="handoverGroups"></div>
       <div class="section-hdr"><span>今日交接记录流水</span></div>
       <div id="handoverHistory" class="card"></div>
@@ -417,11 +410,11 @@
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;">
             <div class="field">
               <label>直接指派给当值伙伴</label>
-              <select id="adhocPerson" class="select"></select>
+              <select id="adhocPerson" class="select" onchange="syncAdhocReviewUI()"></select>
             </div>
             <div class="field">
-              <label>或归属岗位（需次日复核时建议选岗位）</label>
-              <select id="adhocPost" class="select"></select>
+              <label>或归属岗位</label>
+              <select id="adhocPost" class="select" onchange="syncAdhocReviewUI()"></select>
             </div>
             <div class="field">
               <label>业务日期（未来日期到当天才显示）</label>
@@ -432,10 +425,20 @@
             <label>补充说明（可选）</label>
             <input id="adhocDesc" type="text" class="input" placeholder="备注要求或注意事项" />
           </div>
-          <label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#92400E;background:#FFFBEB;padding:10px 12px;border-radius:10px;border:1px solid rgba(217,119,6,0.25);margin-bottom:12px;cursor:pointer;">
-            <input id="adhocNeedReview" type="checkbox" style="width:19px;height:19px;" />
-            <span>🔍 重要任务：第二天自动交给接班伙伴做一次复核检查</span>
-          </label>
+
+          <div style="background:#FFFBEB;padding:11px 13px;border-radius:12px;border:1px solid rgba(217,119,6,0.25);margin-bottom:12px;">
+            <label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#92400E;cursor:pointer;">
+              <input id="adhocNeedReview" type="checkbox" style="width:19px;height:19px;" onchange="syncAdhocReviewUI()" />
+              <span>🔍 重要任务：下一营业日需做一次复核检查</span>
+            </label>
+            <div id="adhocReviewerWrap" class="hidden" style="margin-top:10px;padding-top:10px;border-top:1px dashed rgba(217,119,6,0.3);">
+              <label id="adhocReviewerLabel" style="display:block;font-size:13px;font-weight:600;color:#92400E;margin-bottom:6px;">
+                选择下一营业日复核伙伴
+              </label>
+              <select id="adhocReviewer" class="select" style="background:#FFF;"></select>
+            </div>
+          </div>
+
           <button id="adhocSubmitBtn" class="btn btn-primary" onclick="submitAdhoc()">立即派发临时任务</button>
         </div>
 
@@ -454,7 +457,7 @@
           <div id="scheduleGridWrap" class="sched-scroll"></div>
           <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
             <button id="saveSchedBtn" class="btn btn-primary" onclick="saveScheduleGrid()">确认保存排班表</button>
-            <button id="manualGenBtn" class="btn btn-gray" onclick="manualGenerate()">立即检查生成今日任务与次日复核</button>
+            <button id="manualGenBtn" class="btn btn-gray" onclick="manualGenerate()">立即检查生成今日任务与复核单</button>
           </div>
         </div>
       </div>
@@ -475,7 +478,7 @@
             </div>
           </div>
           <p style="margin:0 0 10px;font-size:12px;color:var(--sub);">
-            勾选「需次日复核」的模板，第二天会自动生成固定琥珀色 <code>🔍 次日接班复核</code> 任务派给次日接班伙伴。
+            勾选「需复核」的模板，下一营业日（即使中间特殊歇业几天也不漏检）会自动生成固定琥珀色 <code>🔍 接班复核</code> 任务派给接班伙伴。
           </p>
           <div id="templateGroupedList"></div>
         </div>
@@ -492,7 +495,7 @@
             </div>
             <label style="font-size:12px;color:var(--sub);display:flex;align-items:center;gap:5px;cursor:pointer;">
               <input id="bookSkipEmpty" type="checkbox" checked onchange="flipBookPage(state.bookPage?.date || state.businessDate)" />
-              翻页自动跳过无任务空日
+              翻页自动跳过歇业无任务空日
             </label>
           </div>
           <div id="bookChapterStrip" class="chapter-strip"></div>
@@ -506,23 +509,23 @@
         </div>
       </div>
 
-      <!-- 子页 D：岗位色标调色盘、人员与休息日配置、系统与防火墙 -->
+      <!-- 子页 D：岗位色标调色盘、人员与一键清除密码、系统与防火墙 -->
       <div id="adminSubOrg" class="hidden">
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;">
           <div class="card">
             <div class="section-hdr" style="margin-top:0;">
               <span>岗位与自由调色盘标签</span>
               <button class="btn btn-secondary btn-sm" onclick="openPostSheet()">+ 新增岗位</button>
             </div>
             <div style="font-size:12px;color:var(--sub);margin-bottom:8px;">
-              注：次日接班复核任务自动锁定使用专属琥珀色 <span class="badge badge-review-fixed">🔍 复核固定色 #D97706</span>
+              注：接班复核任务自动锁定使用专属琥珀色 <span class="badge badge-review-fixed">🔍 复核固定色 #D97706</span>
             </div>
             <div id="postAdminList"></div>
           </div>
 
           <div class="card">
             <div class="section-hdr" style="margin-top:0;">
-              <span>伙伴账号、休息日与登录码</span>
+              <span>伙伴账号、休息日与密码清除</span>
               <button class="btn btn-secondary btn-sm" onclick="openPersonSheet()">+ 新增伙伴</button>
             </div>
             <div id="personAdminList"></div>
@@ -552,7 +555,7 @@
           </div>
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--sub);line-height:1.6;">
             <div><strong>🛡️ 局域网安全拦截提示：</strong>若主机本机能打开网页但手机连同一 WiFi 无法访问，请在主机右下角<strong>右键蓝色对勾托盘图标 → 点击「🛡️ 一键放行局域网防火墙」</strong>即可解决；首次运行如遇 Windows SmartScreen 提示，点击「更多信息 → 仍要运行」即可。</div>
-            <div style="margin-top:6px;"><strong>最近备份文件（每日 03:00 自动备份并校验完整性，保留30天）：</strong> <span id="backupFilesTxt"></span></div>
+            <div style="margin-top:6px;"><strong>最近备份文件（每日自动备份并校验完整性，保留30天）：</strong> <span id="backupFilesTxt"></span></div>
           </div>
         </div>
       </div>
@@ -669,7 +672,6 @@
       </span>`;
     }
 
-    // 前端同步判断某位伙伴在指定 YYYY-MM-DD 是否轮休/调休
     function isPersonRestingJS(person, dateStr) {
       const dt = new Date(dateStr + 'T00:00:00');
       const wd = dt.getDay();
@@ -772,7 +774,23 @@
       openSheet('添加到主屏幕指引', body, `<button class="btn btn-primary btn-block" onclick="closeSheet()">我知道了</button>`);
     }
 
-    function openForgotAdminPwdHelp() {
+    function openForgotPwdHelp() {
+      const name = document.getElementById('loginNicknameInput').value.trim();
+      const matched = state.people.find(p => p.nickname === name);
+      if (matched && !matched.is_admin) {
+        openSheet(
+          '伙伴忘记登录密码怎么办？',
+          `<div style="font-size:14px;line-height:1.75;">
+            <p style="margin-top:0;">请联系<strong>主机管理员</strong>在后台为您一键清除密码：</p>
+            <p style="background:#F5F5F7;padding:10px 12px;border-radius:10px;margin-bottom:0;">
+              管理员进入 <strong>「主机管理 → 岗位·人员·系统」</strong>，在您的名字右侧点击 <strong>「🔓 清除密码」</strong> 即可立即恢复免密登录（随后您也可重新设置新密码）。
+            </p>
+          </div>`,
+          `<button class="btn btn-primary btn-block" onclick="closeSheet()">我知道了</button>`
+        );
+        return;
+      }
+
       openSheet(
         '主机管理员密码安全重置方法',
         `<div style="font-size:14px;line-height:1.75;">
@@ -842,6 +860,8 @@
         wrap.classList.remove('hidden');
         document.getElementById('loginPwdLabel').textContent =
           matched.is_admin && state.defaultAdminPwd ? '登录密码（首次默认：admin123）' : '登录密码';
+        document.getElementById('forgotPwdLinkBtn').textContent =
+          matched.is_admin ? '忘记管理员密码？' : '忘记伙伴密码？';
       } else {
         wrap.classList.add('hidden');
         document.getElementById('loginPasswordInput').value = '';
@@ -1024,7 +1044,6 @@
       }
     }
 
-    // 渲染单条任务（针对 source === 'review' 次日复核任务采用固定琥珀金排版与昨日回溯框）
     function buildSingleTaskCardHTML(t, showPostBadge, standalone) {
       const isReview = t.source === 'review';
       const isPending = t.status === 'pending';
@@ -1040,8 +1059,8 @@
       let reviewOriginHTML = '';
       if (isReview) {
         const pDoneTxt = t.parent_status === 'completed'
-          ? `昨日由 <strong>${esc(t.parent_completed_by || t.parent_assignee_name)}</strong> 于 ${(t.parent_completed_at || '').slice(11, 16)} 打卡完成`
-          : `<strong style="color:var(--red);">⚠️ 昨日原任务（当值：${esc(t.parent_assignee_name)}）尚未勾选完成，请现场重点核查！</strong>`;
+          ? `由 <strong>${esc(t.parent_completed_by || t.parent_assignee_name)}</strong> 于 ${(t.parent_completed_at || '').slice(11, 16)} 打卡完成`
+          : `<strong style="color:var(--red);">⚠️ 原任务（当值：${esc(t.parent_assignee_name)}）尚未勾选完成，请现场重点核查！</strong>`;
         reviewOriginHTML = `
           <div class="review-origin-box">
             <div>📋 <strong>复核溯源 (${esc(t.parent_date)})</strong>：${pDoneTxt}</div>
@@ -1050,6 +1069,9 @@
       }
 
       let metaParts = [`<span>${isReview ? '今日复核伙伴' : '当值伙伴'}：<strong>${esc(t.current_assignee_name)}</strong></span>`];
+      if (!isReview && t.need_review && t.reviewer_name) {
+        metaParts.push(`<span style="color:#B45309;">指定复核人：<strong>${esc(t.reviewer_name)}</strong></span>`);
+      }
       if (t.original_assignee_id && t.original_assignee_id !== t.current_assignee_id) {
         metaParts.push(`<span>初始安排：${esc(t.original_assignee_name)}</span>`);
       }
@@ -1072,10 +1094,10 @@
         <div class="task-card ${standalone ? 'standalone' : ''} ${isReview ? 'is-review' : ''} ${isDone || isNA ? 'is-done' : ''}">
           <div class="task-main">
             <div class="task-badges">
-              ${isReview ? '<span class="badge badge-review-fixed">🔍 次日接班复核</span>' : ''}
+              ${isReview ? '<span class="badge badge-review-fixed">🔍 接班复核</span>' : ''}
               ${showPostBadge ? postPillHTML(t.post_name, t.post_color) : ''}
               ${t.source === 'adhoc' ? '<span class="badge badge-adhoc">临时</span>' : ''}
-              ${(!isReview && t.need_review) ? '<span class="badge badge-need-review">次日需复核</span>' : ''}
+              ${(!isReview && t.need_review) ? `<span class="badge badge-need-review">需复核${t.reviewer_name ? '(' + esc(t.reviewer_name) + ')' : ''}</span>` : ''}
               ${statusBadgeHTML(t.status, isReview)}
             </div>
             <div class="task-title">${isReview ? '【复核检查】' : ''}${esc(t.title)}</div>
@@ -1203,7 +1225,7 @@
         </div>
       `;
       openSheet(
-        isRev ? '确认昨日任务复核无误' : '确认完成任务',
+        isRev ? '确认任务复核无误' : '确认完成任务',
         body,
         `<button class="btn btn-primary btn-block" style="${isRev ? 'background:var(--review);' : ''}" onclick="_confirmComp(this)">
           ${isRev ? '✓ 确认已现场核查无误' : '确认已完成'}
@@ -1484,7 +1506,7 @@
       }
     }
 
-    // ---------- 子页 A：临时任务(含次日复核) + 排班矩阵(自动避让休息日) ----------
+    // ---------- 子页 A：临时任务(支持个人直派必选复核人) + 排班矩阵 ----------
 
     function populateAdhocSelects() {
       const activePeople = state.people.filter(p => p.is_active);
@@ -1495,6 +1517,45 @@
       document.getElementById('adhocPost').innerHTML =
         `<option value="0">-- 不关联岗位（纯个人直派） --</option>` +
         activePosts.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+      syncAdhocReviewUI();
+    }
+
+    // 根据是否选择岗位及是否开启复核，动态切换“复核伙伴”选择器（纯个人直派时强制必选复核人）
+    function syncAdhocReviewUI() {
+      const needRev = document.getElementById('adhocNeedReview').checked;
+      const wrap = document.getElementById('adhocReviewerWrap');
+      if (!needRev) {
+        wrap.classList.add('hidden');
+        return;
+      }
+      wrap.classList.remove('hidden');
+
+      const postVal = Number(document.getElementById('adhocPost').value);
+      const assigneeVal = Number(document.getElementById('adhocPerson').value);
+      const revSel = document.getElementById('adhocReviewer');
+      const prevRev = Number(revSel.value) || 0;
+      const lbl = document.getElementById('adhocReviewerLabel');
+      const activePeople = state.people.filter(p => p.is_active);
+
+      if (postVal > 0) {
+        lbl.textContent = '下一营业日复核人（默认交给该岗位接班伙伴，也可指定专人覆盖）';
+        revSel.innerHTML = `<option value="0">-- 默认由下一营业日该岗位接班伙伴复核 --</option>` +
+          activePeople.map(p => `<option value="${p.id}">${esc(p.nickname)}${p.is_admin ? ' (管理员)' : ''}</option>`).join('');
+        revSel.value = String(prevRev);
+      } else {
+        lbl.textContent = '⚠️ 纯个人直派任务无接班岗位，请指定下一营业日由谁复核 *';
+        revSel.innerHTML = `<option value="0">-- 请选择复核伙伴（必选） --</option>` +
+          activePeople.map(p => `<option value="${p.id}">${esc(p.nickname)}${p.is_admin ? ' (管理员)' : ''}${p.id === assigneeVal ? ' [任务执行人本人]' : ''}</option>`).join('');
+        if (prevRev > 0) {
+          revSel.value = String(prevRev);
+        } else {
+          // 默认优先推荐非本人的在职管理员或其他伙伴
+          const rec = activePeople.find(p => p.is_admin && p.id !== assigneeVal)
+            || activePeople.find(p => p.id !== assigneeVal)
+            || activePeople[0];
+          if (rec) revSel.value = String(rec.id);
+        }
+      }
     }
 
     function submitAdhoc() {
@@ -1505,23 +1566,31 @@
       const pVal = Number(document.getElementById('adhocPerson').value);
       const postVal = Number(document.getElementById('adhocPost').value);
       const needReview = document.getElementById('adhocNeedReview').checked;
+      const revVal = needReview ? Number(document.getElementById('adhocReviewer').value) : 0;
 
       if (!title) return showToast('请填写临时任务标题');
       if (!pVal && !postVal) return showToast('请至少选择当值伙伴或关联岗位');
+      if (needReview && !postVal && !revVal) {
+        return showToast('纯个人直派任务开启复核时，请选择由谁来复核');
+      }
 
       btn.disabled = true;
       api('/api/adhoc', {
         method: 'POST',
         body: JSON.stringify({
-          title, description: desc, business_date: bizDate,
+          title,
+          description: desc,
+          business_date: bizDate,
           assignee_id: pVal > 0 ? pVal : null,
           post_id: postVal > 0 ? postVal : null,
-          need_review: needReview
+          need_review: needReview,
+          reviewer_id: revVal > 0 ? revVal : null
         })
       }).then(() => {
         document.getElementById('adhocTitle').value = '';
         document.getElementById('adhocDesc').value = '';
         document.getElementById('adhocNeedReview').checked = false;
+        syncAdhocReviewUI();
         showToast(bizDate > state.businessDate ? `已预约至 ${bizDate} 待办` : '临时任务已派发');
       }).catch(e => showToast(e.message))
         .finally(() => { btn.disabled = false; });
@@ -1680,7 +1749,7 @@
       );
     }
 
-    // ---------- 子页 B：周期任务模板（含次日复核开关） ----------
+    // ---------- 子页 B：周期任务模板 ----------
 
     async function loadTemplates() {
       try {
@@ -1708,7 +1777,7 @@
       const box = document.getElementById('templateGroupedList');
       const filter = document.getElementById('tmplCycleFilter').value;
       const cycleDefs = [
-        { key: 'daily', label: '📅 每日周期任务', desc: '每天 00:05 自动生成' },
+        { key: 'daily', label: '📅 每日周期任务', desc: '营业日 00:05 自动生成' },
         { key: 'weekly', label: '🗓️ 每周周期任务', desc: '按选定星期生成' },
         { key: 'monthly', label: '📆 每月周期任务', desc: '按指定日期生成，29/30/31号自动收敛至当月最后一天' }
       ].filter(c => filter === 'all' || filter === c.key);
@@ -1849,7 +1918,7 @@
          </div>
          <label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:#92400E;background:#FFFBEB;padding:10px 12px;border-radius:10px;border:1px solid rgba(217,119,6,0.25);margin-bottom:10px;cursor:pointer;">
            <input id="tmplNeedReview" type="checkbox" style="width:19px;height:19px;" ${t.need_review ? 'checked' : ''} />
-           <span>🔍 重要任务：第二天自动派发给接班伙伴复核检查</span>
+           <span>🔍 重要任务：下一营业日自动派发给接班伙伴复核检查</span>
          </label>
          ${t.id ? `<label style="display:flex;align-items:center;gap:8px;font-size:14px;">
            <input id="tmplActive" type="checkbox" style="width:20px;height:20px;" ${t.is_active ? 'checked' : ''} /> 启用该模板（取消勾选为软停用）
@@ -1937,7 +2006,7 @@
       });
 
       const panelsHTML = !panels.length
-        ? `<div class="empty-state">这一天没有任务记录，点击上方「上一页 / 下一页」继续翻阅吧。</div>`
+        ? `<div class="empty-state">这一天没有任务记录（可能歇业未启动程序），点击上方「上一页 / 下一页」继续翻阅吧。</div>`
         : `<div class="comic-grid">
             ${panels.map((p, idx) => `
               <div class="comic-panel">
@@ -2009,7 +2078,7 @@
       `;
     }
 
-    // ---------- 子页 D：岗位自由调色盘、伙伴休息日配置、系统安全 ----------
+    // ---------- 子页 D：岗位自由调色盘、伙伴一键清除密码、系统安全 ----------
 
     function renderOrgAndSystem() {
       document.getElementById('lanUrlTxt').textContent = state.lanUrl;
@@ -2036,6 +2105,7 @@
       const perBox = document.getElementById('personAdminList');
       perBox.innerHTML = state.people.map(p => {
         const restInfo = formatPersonRestSummary(p);
+        const canQuickClearPwd = !p.is_admin && p.has_password;
         return `
           <div class="row-item" style="${p.is_active ? '' : 'opacity:0.5;'}">
             <div>
@@ -2048,13 +2118,40 @@
               </div>
               ${restInfo ? `<div style="font-size:12px;color:var(--sub);margin-top:2px;">🏖️ 休息：${esc(restInfo)}</div>` : ''}
             </div>
-            <div style="display:flex;gap:6px;">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+              ${canQuickClearPwd ? `<button class="btn btn-amber btn-sm" onclick="openClearMemberPwdSheet(${p.id}, '${esc(p.nickname)}')">🔓 清除密码</button>` : ''}
               ${p.is_active ? `<button class="btn btn-secondary btn-sm" onclick="openPersonQrSheet('${esc(p.nickname)}', ${p.is_admin || p.has_password})">登录码</button>` : ''}
               <button class="btn btn-gray btn-sm" onclick="openPersonSheet(${p.id})">编辑</button>
             </div>
           </div>
         `;
       }).join('');
+    }
+
+    function openClearMemberPwdSheet(personID, nickname) {
+      window._confirmClearMemberPwd = async (btn) => {
+        btn.disabled = true;
+        try {
+          await api('/api/admin/people/clear-password', {
+            method: 'POST',
+            body: JSON.stringify({ person_id: personID })
+          });
+          closeSheet();
+          await initApp();
+          showToast(`已清除「${nickname}」的登录密码，现可直接免密进入`);
+        } catch (e) {
+          showToast(e.message);
+          btn.disabled = false;
+        }
+      };
+      openSheet(
+        '清除伙伴登录密码',
+        `<p style="margin:0;font-size:14px;line-height:1.7;">
+          确定要帮伙伴 <strong>「${esc(nickname)}」</strong> 清除登录密码吗？<br/>
+          清除后该伙伴可直接点击头像<strong>免密进入系统</strong>，进入后也可在右上角自行设置新密码。
+        </p>`,
+        `<button class="btn btn-primary btn-block" onclick="_confirmClearMemberPwd(this)">确认清除密码（恢复免密登录）</button>`
+      );
     }
 
     function openPostSheet(id = 0) {
@@ -2139,7 +2236,6 @@
         rest_weekdays: '', rest_month_days: '', rest_month: state.currentMonth, is_active: true
       };
       const selRestWds = new Set((p.rest_weekdays || '').split(',').filter(Boolean).map(Number));
-      // 若之前保存的调休月份已过期（非本月且都是纯数字），提示或方便更新为本月
       const initMonthVal = (p.rest_month && p.rest_month < state.currentMonth && p.rest_month_days && !p.rest_month_days.includes('-'))
         ? '' : (p.rest_month_days || '');
 
@@ -2189,8 +2285,8 @@
            <label>${p.id ? '重置登录密码（不修改请留空）' : '设置登录密码（普通伙伴可留空免密；管理员必填）'}</label>
            <input id="perPwdIn" type="password" class="input" placeholder="${p.has_password ? '已设置密码，输入新密码可覆盖' : '留空即免密登录'}" />
          </div>
-         ${(p.id && !p.is_admin && p.has_password) ? `<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">
-           <input id="perClearPwdIn" type="checkbox" style="width:20px;height:20px;" /> 清空密码（恢复免密一键登录）
+         ${(p.id && !p.is_admin && p.has_password) ? `<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;color:#B45309;font-weight:600;">
+           <input id="perClearPwdIn" type="checkbox" style="width:20px;height:20px;" /> 🔓 清空该伙伴密码（忘记密码时勾选恢复免密登录）
          </label>` : ''}
 
          <div style="background:#F5F5F7;padding:12px;border-radius:12px;margin-bottom:12px;">
