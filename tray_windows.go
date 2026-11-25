@@ -4,9 +4,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -17,6 +20,7 @@ const (
 	wmUser          = 0x0400
 	wmTrayCallback  = wmUser + 1
 	wmAppQuit       = wmUser + 2
+	wmLButtonUp     = 0x0202
 	wmLButtonDblClk = 0x0203
 	wmRButtonUp     = 0x0205
 
@@ -37,13 +41,23 @@ const (
 	tpmRightButton = 0x0002
 	tpmBottomAlign = 0x0020
 
+	mbYesNo        = 0x00000004
+	mbIconQuestion = 0x00000020
+	mbIconInfo     = 0x00000040
+	idYes          = 6
+
+	errorAlreadyExists = 183
+
 	idMenuProcInfo  = 1001
 	idMenuOpenWeb   = 1002
 	idMenuAutoStart = 1003
-	idMenuQuitAll   = 1004
+	idMenuFirewall  = 1004
+	idMenuResetPwd  = 1005
+	idMenuQuitAll   = 1006
 
 	regRunPath      = `Software\Microsoft\Windows\CurrentVersion\Run`
 	autoStartAppKey = "TaskHubIntranetServer"
+	singleMutexName = `Local\TaskHubIntranetServer_SingleInstance_Mutex`
 )
 
 var (
@@ -51,30 +65,42 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	advapi32 = syscall.NewLazyDLL("advapi32.dll")
+	gdi32    = syscall.NewLazyDLL("gdi32.dll")
 
-	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
-	procRegisterClassExW = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
-	procGetMessageW      = user32.NewProc("GetMessageW")
-	procTranslateMessage = user32.NewProc("TranslateMessage")
-	procDispatchMessageW = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
-	procPostMessageW     = user32.NewProc("PostMessageW")
-	procDestroyWindow    = user32.NewProc("DestroyWindow")
-	procLoadIconW        = user32.NewProc("LoadIconW")
-	procCreatePopupMenu  = user32.NewProc("CreatePopupMenu")
-	procAppendMenuW      = user32.NewProc("AppendMenuW")
-	procTrackPopupMenu   = user32.NewProc("TrackPopupMenu")
-	procDestroyMenu      = user32.NewProc("DestroyMenu")
-	procGetCursorPos     = user32.NewProc("GetCursorPos")
-	procSetForegroundWnd = user32.NewProc("SetForegroundWindow")
-	procShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
-	procRegOpenKeyExW    = advapi32.NewProc("RegOpenKeyExW")
-	procRegQueryValueExW = advapi32.NewProc("RegQueryValueExW")
-	procRegSetValueExW   = advapi32.NewProc("RegSetValueExW")
-	procRegDeleteValueW  = advapi32.NewProc("RegDeleteValueW")
-	procRegCloseKey      = advapi32.NewProc("RegCloseKey")
+	procCreateMutexW        = kernel32.NewProc("CreateMutexW")
+	procCloseHandle         = kernel32.NewProc("CloseHandle")
+	procGetModuleHandleW    = kernel32.NewProc("GetModuleHandleW")
+	procRegisterClassExW    = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW     = user32.NewProc("CreateWindowExW")
+	procDefWindowProcW      = user32.NewProc("DefWindowProcW")
+	procGetMessageW         = user32.NewProc("GetMessageW")
+	procTranslateMessage    = user32.NewProc("TranslateMessage")
+	procDispatchMessageW    = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage     = user32.NewProc("PostQuitMessage")
+	procPostMessageW        = user32.NewProc("PostMessageW")
+	procDestroyWindow       = user32.NewProc("DestroyWindow")
+	procLoadIconW           = user32.NewProc("LoadIconW")
+	procCreateIconIndirect  = user32.NewProc("CreateIconIndirect")
+	procDestroyIcon         = user32.NewProc("DestroyIcon")
+	procGetDC               = user32.NewProc("GetDC")
+	procReleaseDC           = user32.NewProc("ReleaseDC")
+	procMessageBoxW         = user32.NewProc("MessageBoxW")
+	procCreatePopupMenu     = user32.NewProc("CreatePopupMenu")
+	procAppendMenuW         = user32.NewProc("AppendMenuW")
+	procTrackPopupMenu      = user32.NewProc("TrackPopupMenu")
+	procDestroyMenu         = user32.NewProc("DestroyMenu")
+	procGetCursorPos        = user32.NewProc("GetCursorPos")
+	procSetForegroundWnd    = user32.NewProc("SetForegroundWindow")
+	procShellNotifyIconW    = shell32.NewProc("Shell_NotifyIconW")
+	procShellExecuteW       = shell32.NewProc("ShellExecuteW")
+	procCreateDIBSection    = gdi32.NewProc("CreateDIBSection")
+	procCreateBitmap        = gdi32.NewProc("CreateBitmap")
+	procDeleteObject        = gdi32.NewProc("DeleteObject")
+	procRegOpenKeyExW       = advapi32.NewProc("RegOpenKeyExW")
+	procRegQueryValueExW    = advapi32.NewProc("RegQueryValueExW")
+	procRegSetValueExW      = advapi32.NewProc("RegSetValueExW")
+	procRegDeleteValueW     = advapi32.NewProc("RegDeleteValueW")
+	procRegCloseKey         = advapi32.NewProc("RegCloseKey")
 )
 
 type wndClassExW struct {
@@ -125,30 +151,184 @@ type notifyIconDataW struct {
 	hBalloonIcon     uintptr
 }
 
+type bitmapInfoHeader struct {
+	biSize          uint32
+	biWidth         int32
+	biHeight        int32
+	biPlanes        uint16
+	biBitCount      uint16
+	biCompression   uint32
+	biSizeImage     uint32
+	biXPelsPerMeter int32
+	biYPelsPerMeter int32
+	biClrUsed       uint32
+	biClrImportant  uint32
+}
+
+type iconInfo struct {
+	fIcon    int32
+	xHotspot uint32
+	yHotspot uint32
+	hbmMask  uintptr
+	hbmColor uintptr
+}
+
 var trayGlobal struct {
 	hwnd     uintptr
 	procName string
+	store    *Store
 	cancel   context.CancelFunc
 	logger   *slog.Logger
 }
 
-func runTray(ctx context.Context, cancel context.CancelFunc, procName string, logger *slog.Logger) {
+// acquireSingleInstance 创建命名互斥锁，若已运行返回 alreadyRunning = true
+func acquireSingleInstance(_, _ string) (func(), bool) {
+	namePtr, _ := syscall.UTF16PtrFromString(singleMutexName)
+	hMutex, _, lastErr := procCreateMutexW.Call(0, 1, uintptr(unsafe.Pointer(namePtr)))
+	if hMutex == 0 {
+		return func() {}, false
+	}
+	if lastErr == syscall.Errno(errorAlreadyExists) {
+		_, _, _ = procCloseHandle.Call(hMutex)
+		return func() {}, true
+	}
+	return func() {
+		_, _, _ = procCloseHandle.Call(hMutex)
+	}, false
+}
+
+// createPrettyTrayIcon 内存中用 GDI 渲染 64x64 抗锯齿苹果蓝圆角渐变 + 纯白对勾高清图标
+func createPrettyTrayIcon() (uintptr, bool) {
+	const sz = 64
+	var bi bitmapInfoHeader
+	bi.biSize = uint32(unsafe.Sizeof(bi))
+	bi.biWidth = sz
+	bi.biHeight = -sz // Top-down DIB
+	bi.biPlanes = 1
+	bi.biBitCount = 32
+	bi.biCompression = 0 // BI_RGB
+
+	hdc, _, _ := procGetDC.Call(0)
+	var bitsPtr uintptr
+	hbmColor, _, _ := procCreateDIBSection.Call(
+		hdc,
+		uintptr(unsafe.Pointer(&bi)),
+		0,
+		uintptr(unsafe.Pointer(&bitsPtr)),
+		0, 0,
+	)
+	if hdc != 0 {
+		_, _, _ = procReleaseDC.Call(0, hdc)
+	}
+	if hbmColor == 0 || bitsPtr == 0 {
+		hDef, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
+		return hDef, false
+	}
+
+	pixels := unsafe.Slice((*uint32)(unsafe.Pointer(bitsPtr)), sz*sz)
+	distSeg := func(px, py, ax, ay, bx, by float64) float64 {
+		vx, vy := bx-ax, by-ay
+		wx, wy := px-ax, py-ay
+		c1 := wx*vx + wy*vy
+		if c1 <= 0 {
+			return math.Hypot(px-ax, py-ay)
+		}
+		c2 := vx*vx + vy*vy
+		if c2 <= c1 {
+			return math.Hypot(px-bx, py-by)
+		}
+		b := c1 / c2
+		return math.Hypot(px-(ax+b*vx), py-(ay+b*vy))
+	}
+	sdRoundBox := func(px, py, cx, cy, half, rad float64) float64 {
+		dx := math.Abs(px-cx) - (half - rad)
+		dy := math.Abs(py-cy) - (half - rad)
+		ox, oy := math.Max(dx, 0), math.Max(dy, 0)
+		return math.Hypot(ox, oy) + math.Min(math.Max(dx, dy), 0) - rad
+	}
+
+	for y := 0; y < sz; y++ {
+		t := float64(y) / float64(sz-1)
+		// 顶部亮天蓝 (#2E90FA) -> 底部苹果蓝 (#0066EE)
+		bgR := 46.0*(1-t) + 0.0*t
+		bgG := 144.0*(1-t) + 102.0*t
+		bgB := 250.0*(1-t) + 238.0*t
+
+		for x := 0; x < sz; x++ {
+			fx, fy := float64(x)+0.5, float64(y)+0.5
+			dBox := sdRoundBox(fx, fy, 32.0, 32.0, 29.0, 14.0)
+			alpha := math.Max(0, math.Min(1, 0.5-dBox))
+			if alpha <= 0 {
+				pixels[y*sz+x] = 0
+				continue
+			}
+
+			// 白色圆润对勾轨迹：(18,33) -> (28,43) -> (47,22)
+			dChk := math.Min(
+				distSeg(fx, fy, 18.5, 33.5, 27.5, 42.5),
+				distSeg(fx, fy, 27.5, 42.5, 46.5, 22.0),
+			)
+			chkMix := math.Max(0, math.Min(1, 4.2-dChk))
+
+			r := bgR*(1-chkMix) + 255.0*chkMix
+			g := bgG*(1-chkMix) + 255.0*chkMix
+			b := bgB*(1-chkMix) + 255.0*chkMix
+
+			// Win32 ARGB 预乘透明度
+			aByte := uint32(alpha*255.0 + 0.5)
+			rByte := uint32(r*alpha + 0.5)
+			gByte := uint32(g*alpha + 0.5)
+			bByte := uint32(b*alpha + 0.5)
+			pixels[y*sz+x] = (aByte << 24) | (rByte << 16) | (gByte << 8) | bByte
+		}
+	}
+
+	maskBytes := make([]byte, (sz*sz)/8)
+	hbmMask, _, _ := procCreateBitmap.Call(sz, sz, 1, 1, uintptr(unsafe.Pointer(&maskBytes[0])))
+
+	ii := iconInfo{
+		fIcon:    1,
+		hbmMask:  hbmMask,
+		hbmColor: hbmColor,
+	}
+	hIcon, _, _ := procCreateIconIndirect.Call(uintptr(unsafe.Pointer(&ii)))
+
+	// CreateIconIndirect 已拷贝位图数据，立即释放临时 HBITMAP 防 GDI 句柄泄漏
+	if hbmMask != 0 {
+		_, _, _ = procDeleteObject.Call(hbmMask)
+	}
+	_, _, _ = procDeleteObject.Call(hbmColor)
+
+	if hIcon == 0 {
+		hDef, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
+		return hDef, false
+	}
+	return hIcon, true
+}
+
+func runTray(ctx context.Context, cancel context.CancelFunc, procName string, store *Store, logger *slog.Logger) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	trayGlobal.procName = procName
+	trayGlobal.store = store
 	trayGlobal.cancel = cancel
 	trayGlobal.logger = logger
 
 	hInst, _, _ := procGetModuleHandleW.Call(0)
 	className, _ := syscall.UTF16PtrFromString("TaskHubTrayWndClass")
 	wndTitle, _ := syscall.UTF16PtrFromString("TaskHubTrayHiddenWindow")
-	hIcon, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
+
+	hIcon, customIcon := createPrettyTrayIcon()
+	if customIcon {
+		defer procDestroyIcon.Call(hIcon)
+	}
 
 	wc := wndClassExW{
 		lpfnWndProc:   syscall.NewCallback(trayWndProc),
 		hInstance:     hInst,
 		hIcon:         hIcon,
+		hIconSm:       hIcon,
 		lpszClassName: className,
 	}
 	wc.cbSize = uint32(unsafe.Sizeof(wc))
@@ -163,7 +343,7 @@ func runTray(ctx context.Context, cancel context.CancelFunc, procName string, lo
 		0, 0, hInst, 0,
 	)
 	if hwnd == 0 {
-		logger.Warn("创建托盘消息窗口失败，退化为后台等待模式")
+		logger.Warn("创建托盘窗口失败，退化为后台等待模式")
 		<-ctx.Done()
 		return
 	}
@@ -177,7 +357,7 @@ func runTray(ctx context.Context, cancel context.CancelFunc, procName string, lo
 	nid.uCallbackMessage = wmTrayCallback
 	nid.hIcon = hIcon
 
-	tipRunes, _ := syscall.UTF16FromString("内网岗位任务系统 - " + procName)
+	tipRunes, _ := syscall.UTF16FromString("岗位协作系统（左键打开页面 / 右键管理） - " + procName)
 	copy(nid.szTip[:127], tipRunes)
 
 	_, _, _ = procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
@@ -205,7 +385,7 @@ func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	switch msg {
 	case wmTrayCallback:
 		switch uint32(lParam) {
-		case wmLButtonDblClk:
+		case wmLButtonUp, wmLButtonDblClk:
 			openBrowser(getTrayLocalURL())
 		case wmRButtonUp:
 			showTrayMenu(hwnd)
@@ -222,6 +402,10 @@ func trayWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			if err := setWindowsAutoStart(!enabled); err != nil && trayGlobal.logger != nil {
 				trayGlobal.logger.Error("切换开机自启失败", "err", err)
 			}
+		case idMenuFirewall:
+			allowWindowsFirewallRule(hwnd)
+		case idMenuResetPwd:
+			confirmAndResetAdminPwd(hwnd)
 		case idMenuQuitAll:
 			if trayGlobal.cancel != nil {
 				trayGlobal.cancel()
@@ -251,10 +435,12 @@ func showTrayMenu(hwnd uintptr) {
 	defer procDestroyMenu.Call(hMenu)
 
 	localURL := getTrayLocalURL()
-	procLabel, _ := syscall.UTF16PtrFromString("进程: " + trayGlobal.procName)
-	openLabel, _ := syscall.UTF16PtrFromString("打开管理后台 (" + localURL + ")")
-	autoLabel, _ := syscall.UTF16PtrFromString("开机自动启动")
-	quitLabel, _ := syscall.UTF16PtrFromString("彻底关闭程序 (退出所有进程)")
+	procLabel, _ := syscall.UTF16PtrFromString("运行进程: " + trayGlobal.procName)
+	openLabel, _ := syscall.UTF16PtrFromString("🌐 打开管理网页 (" + localURL + ")")
+	autoLabel, _ := syscall.UTF16PtrFromString("🚀 开机静默自启")
+	fwLabel, _ := syscall.UTF16PtrFromString("🛡️ 一键放行局域网防火墙 (手机无法访问时点此)")
+	resetLabel, _ := syscall.UTF16PtrFromString("🔑 忘记密码？重置管理员密码为 admin123")
+	quitLabel, _ := syscall.UTF16PtrFromString("⏹ 彻底关闭程序 (退出服务)")
 
 	_, _, _ = procAppendMenuW.Call(hMenu, mfString|mfGrayed, idMenuProcInfo, uintptr(unsafe.Pointer(procLabel)))
 	_, _, _ = procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
@@ -265,6 +451,8 @@ func showTrayMenu(hwnd uintptr) {
 		autoFlags |= mfChecked
 	}
 	_, _, _ = procAppendMenuW.Call(hMenu, autoFlags, idMenuAutoStart, uintptr(unsafe.Pointer(autoLabel)))
+	_, _, _ = procAppendMenuW.Call(hMenu, mfString, idMenuFirewall, uintptr(unsafe.Pointer(fwLabel)))
+	_, _, _ = procAppendMenuW.Call(hMenu, mfString, idMenuResetPwd, uintptr(unsafe.Pointer(resetLabel)))
 	_, _, _ = procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 	_, _, _ = procAppendMenuW.Call(hMenu, mfString, idMenuQuitAll, uintptr(unsafe.Pointer(quitLabel)))
 
@@ -280,6 +468,44 @@ func showTrayMenu(hwnd uintptr) {
 		hwnd,
 		0,
 	)
+}
+
+func confirmAndResetAdminPwd(hwnd uintptr) {
+	if trayGlobal.store == nil {
+		return
+	}
+	qTxt, _ := syscall.UTF16PtrFromString("确定要将主机管理员的登录密码重置为初始密码「admin123」吗？")
+	qTitle, _ := syscall.UTF16PtrFromString("重置管理员密码确认")
+	ret, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(qTxt)), uintptr(unsafe.Pointer(qTitle)), mbYesNo|mbIconQuestion)
+	if ret != idYes {
+		return
+	}
+	if err := trayGlobal.store.ResetAdminPasswords(context.Background()); err != nil {
+		errTxt, _ := syscall.UTF16PtrFromString("重置失败：" + err.Error())
+		_, _, _ = procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(errTxt)), uintptr(unsafe.Pointer(qTitle)), mbIconInfo)
+		return
+	}
+	okTxt, _ := syscall.UTF16PtrFromString("管理员密码已成功重置为：admin123\n现在将为您打开登录页面，登录后请及时修改新密码。")
+	_, _, _ = procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(okTxt)), uintptr(unsafe.Pointer(qTitle)), mbIconInfo)
+	openBrowser(getTrayLocalURL())
+}
+
+// allowWindowsFirewallRule 按需唤起 UAC 为当前 exe 添加 Windows 防火墙入站放行规则
+func allowWindowsFirewallRule(hwnd uintptr) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	localURL := getTrayLocalURL()
+	port := "8080"
+	if idx := strings.LastIndex(localURL, ":"); idx != -1 {
+		port = localURL[idx+1:]
+	}
+	verb, _ := syscall.UTF16PtrFromString("runas")
+	file, _ := syscall.UTF16PtrFromString("netsh.exe")
+	argsStr := fmt.Sprintf(`advfirewall firewall add rule name="TaskHub Intranet (%s)" dir=in action=allow program="%s" enable=yes profile=private,domain,public`, port, exePath)
+	args, _ := syscall.UTF16PtrFromString(argsStr)
+	_, _, _ = procShellExecuteW.Call(hwnd, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), uintptr(unsafe.Pointer(args)), 0, 0)
 }
 
 func isWindowsAutoStartEnabled() bool {
@@ -302,9 +528,7 @@ func isWindowsAutoStartEnabled() bool {
 	r1, _, _ := procRegQueryValueExW.Call(
 		hKey,
 		uintptr(unsafe.Pointer(valName)),
-		0,
-		0,
-		0,
+		0, 0, 0,
 		uintptr(unsafe.Pointer(&dataLen)),
 	)
 	return r1 == 0 && dataLen > 0
@@ -338,7 +562,8 @@ func setWindowsAutoStart(enable bool) error {
 	if err != nil {
 		return err
 	}
-	cmdUTF16, err := syscall.UTF16FromString(`"` + exePath + `"`)
+	// 开机自启时附加 -autostart 参数，静默驻留托盘不自动弹窗打扰
+	cmdUTF16, err := syscall.UTF16FromString(`"` + exePath + `" -autostart`)
 	if err != nil {
 		return err
 	}
