@@ -1,4 +1,4 @@
-const CACHE_NAME = 'taskhub-shell-v2';
+const CACHE_NAME = 'taskhub-shell-v3';
 const SHELL_ASSETS = ['/', '/index.html', '/manifest.json', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
