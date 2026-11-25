@@ -39,6 +39,7 @@ func newTestStore(t *testing.T) (*Store, *time.Location) {
 // 1. 测试旧版数据库表结构升级迁移 (rebuildTaskInstanceForReview) 与启动自检异常拦截
 func TestLegacySchemaMigrationAndSelfCheck(t *testing.T) {
 	base := t.TempDir()
+	selfCheckDBPath := filepath.Join(base, "data", "selfcheck.db")
 	dbPath := filepath.Join(base, "data", "legacy.db")
 	backupDir := filepath.Join(base, "backups")
 	_ = os.MkdirAll(filepath.Dir(dbPath), 0700)
@@ -46,13 +47,13 @@ func TestLegacySchemaMigrationAndSelfCheck(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// 备份目录不存在时，NewStore 自检必须报错拒绝启动
-	if _, err := NewStore(dbPath, filepath.Join(base, "missing_dir"), loc, logger); err == nil {
+	// 备份目录不存在时，使用独立库路径验证 NewStore 自检必须报错拒绝启动
+	if _, err := NewStore(selfCheckDBPath, filepath.Join(base, "missing_dir"), loc, logger); err == nil {
 		t.Fatal("备份目录不存在时 NewStore 应当自检失败")
 	}
 
 	_ = os.MkdirAll(backupDir, 0700)
-	// 先手工建一个不含 'review' 枚举的早期 v1 版 task_instance 表并塞入历史数据与无密码管理员
+	// 手工建一个不含 'review' 枚举的早期 v1 版 task_instance 表并塞入历史数据与无密码管理员
 	rawDB, err := sql.Open("sqlite", buildDSN(dbPath, false))
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +61,7 @@ func TestLegacySchemaMigrationAndSelfCheck(t *testing.T) {
 	_, err = rawDB.Exec(`
 		CREATE TABLE person (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			nickname TEXT NOT NULL,
+			nickname TEXT NOT NULL UNIQUE,
 			password_hash TEXT NOT NULL DEFAULT '',
 			is_admin INTEGER NOT NULL DEFAULT 1,
 			is_active INTEGER NOT NULL DEFAULT 1,
@@ -71,7 +72,7 @@ func TestLegacySchemaMigrationAndSelfCheck(t *testing.T) {
 
 		CREATE TABLE post (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
+			name TEXT NOT NULL UNIQUE,
 			sort_order INTEGER NOT NULL DEFAULT 0,
 			is_active INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL
@@ -184,6 +185,11 @@ func TestAuthSessionsAndPasswordBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 正常重置现有管理员密码分支
+	if err := s.ResetAdminPasswords(ctx); err != nil {
+		t.Fatalf("重置现有管理员密码失败: %v", err)
+	}
+
 	// 普通成员：免密 -> 自行设密 -> 自行清空密码 -> 管理员设密 -> 管理员一键清密
 	_ = s.SavePerson(ctx, PersonSaveInput{Nickname: "伙伴小张", InRota: true, IsActive: true})
 	if !s.CanPasswordlessQuickLogin(ctx, "伙伴小张") {
@@ -241,10 +247,15 @@ func TestAuthSessionsAndPasswordBranches(t *testing.T) {
 		t.Fatal("停用账号不应允许登录")
 	}
 
-	// 极端情况：若数据库中无任何管理员记录时调用 ResetAdminPasswords 自动重建默认管理员
-	_, _ = s.writeDB.Exec("UPDATE person SET is_admin = 0")
+	// 极端情况：若数据库中管理员记录被清空，调用 ResetAdminPasswords 自动重建默认管理员
+	if _, err := s.writeDB.Exec("DELETE FROM session; DELETE FROM person WHERE is_admin = 1;"); err != nil {
+		t.Fatalf("模拟清空管理员记录失败: %v", err)
+	}
 	if err := s.ResetAdminPasswords(ctx); err != nil {
 		t.Fatalf("无管理员兜底重建失败: %v", err)
+	}
+	if _, err := s.Login(ctx, "主机管理员", DefaultAdminInitialPassword); err != nil {
+		t.Fatalf("兜底重建后默认管理员登录失败: %v", err)
 	}
 }
 
@@ -430,12 +441,12 @@ func TestTaskStateMachineReviewFallbacksAndHistoryBook(t *testing.T) {
 
 	// 创建周五触发的每周任务（带 NeedReview）并测试更新模板
 	tmplID, err := s.CreateOrUpdateTemplate(ctx, TaskTemplate{
-		PostID:     postID,
-		Title:      "周五UPS放电巡检",
+		PostID:      postID,
+		Title:       "周五UPS放电巡检",
 		Description: "检查电压曲线",
-		CycleType:  "weekly",
-		Weekdays:   "5", // 周五
-		NeedReview: true,
+		CycleType:   "weekly",
+		Weekdays:    "5", // 周五
+		NeedReview:  true,
 	}, day1)
 	if err != nil {
 		t.Fatal(err)
@@ -494,7 +505,7 @@ func TestTaskStateMachineReviewFallbacksAndHistoryBook(t *testing.T) {
 		t.Fatalf("交接流水记录异常: %+v", hos)
 	}
 
-	// 测试凌晨 00:02 补打勾“昨天”的需复核任务 -> 实时补偿生成今日复核单，且次日未排班时自动兜底给主机管理员！
+	// 测试凌晨 00:02 补打勾“昨天”的需复核任务 -> 实时补偿生成今日复核单，且次日未排班时自动兜底给主机管理员
 	day2Early := time.Date(2026, 11, 21, 0, 2, 0, 0, loc)
 	s.SetClock(func() time.Time { return day2Early })
 	if _, err := s.CompleteTask(ctx, t1.ID, yi.ID, yi); err != nil {
@@ -545,7 +556,7 @@ func TestTaskStateMachineReviewFallbacksAndHistoryBook(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 验证统计率计算（含无此项 vs 不含无此项）与历史手账翻页（skipEmpty=true / false）
+	// 验证统计率计算与历史手账翻页（skipEmpty=true / false）
 	stats, err := s.GetDailyStats(ctx, "2026-11-22")
 	if err != nil || stats.Cancelled != 1 {
 		t.Fatalf("统计结果异常: %+v, err=%v", stats, err)
