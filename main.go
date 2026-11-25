@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,7 +26,6 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
-// RotatingWriter 按大小轮转日志写入器
 type RotatingWriter struct {
 	mu      sync.Mutex
 	path    string
@@ -81,18 +81,23 @@ func (w *RotatingWriter) Close() error {
 	return nil
 }
 
-// HTTPManager 支持在线无感热切换监听端口并优雅回收旧连接
 type HTTPManager struct {
-	mu      sync.RWMutex
-	srv     *http.Server
-	port    string
-	handler http.Handler
-	logger  *slog.Logger
-	onFatal func()
+	mu            sync.RWMutex
+	srv           *http.Server
+	port          string
+	activeURLFile string
+	handler       http.Handler
+	logger        *slog.Logger
+	onFatal       func()
 }
 
-func NewHTTPManager(handler http.Handler, logger *slog.Logger, onFatal func()) *HTTPManager {
-	return &HTTPManager{handler: handler, logger: logger, onFatal: onFatal}
+func NewHTTPManager(handler http.Handler, activeURLFile string, logger *slog.Logger, onFatal func()) *HTTPManager {
+	return &HTTPManager{
+		handler:       handler,
+		activeURLFile: activeURLFile,
+		logger:        logger,
+		onFatal:       onFatal,
+	}
 }
 
 func (m *HTTPManager) StartOnPort(port string) error {
@@ -100,9 +105,10 @@ func (m *HTTPManager) StartOnPort(port string) error {
 	if err != nil || pNum < 1 || pNum > 65535 {
 		return fmt.Errorf("端口号必须在 1~65535 之间")
 	}
+	// 默认监听全网卡以供局域网手机访问；若因极端组策略失败，提示明确原因
 	ln, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
-		return fmt.Errorf("无法绑定端口 %s（可能已被其他程序占用）: %w", port, err)
+		return fmt.Errorf("无法绑定端口 %s（可能已被其他软件占用）: %w", port, err)
 	}
 
 	newSrv := &http.Server{
@@ -111,6 +117,7 @@ func (m *HTTPManager) StartOnPort(port string) error {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
 	}
 
 	m.mu.Lock()
@@ -119,7 +126,11 @@ func (m *HTTPManager) StartOnPort(port string) error {
 	m.port = port
 	m.mu.Unlock()
 
-	setTrayLocalURL(fmt.Sprintf("http://127.0.0.1:%s", port))
+	localURL := fmt.Sprintf("http://127.0.0.1:%s", port)
+	setTrayLocalURL(localURL)
+	if m.activeURLFile != "" {
+		_ = os.WriteFile(m.activeURLFile, []byte(localURL), 0600)
+	}
 
 	go func() {
 		if err := newSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -130,7 +141,6 @@ func (m *HTTPManager) StartOnPort(port string) error {
 		}
 	}()
 
-	// 延迟 600ms 优雅关闭旧端口服务，确保当前修改端口请求的 HTTP 响应先完整发回浏览器
 	if oldSrv != nil {
 		go func(s *http.Server) {
 			time.Sleep(600 * time.Millisecond)
@@ -152,6 +162,9 @@ func (m *HTTPManager) Shutdown(ctx context.Context) error {
 	m.mu.RLock()
 	srv := m.srv
 	m.mu.RUnlock()
+	if m.activeURLFile != "" {
+		_ = os.Remove(m.activeURLFile)
+	}
 	if srv != nil {
 		return srv.Shutdown(ctx)
 	}
@@ -175,6 +188,16 @@ func getTrayLocalURL() string {
 	return currentTrayURL
 }
 
+func resolveExistingInstanceURL(activeURLFile string) string {
+	if raw, err := os.ReadFile(activeURLFile); err == nil {
+		u := strings.TrimSpace(string(raw))
+		if strings.HasPrefix(u, "http://") {
+			return u
+		}
+	}
+	return "http://127.0.0.1:8080"
+}
+
 func main() {
 	debug.SetMemoryLimit(256 * 1024 * 1024)
 
@@ -184,11 +207,14 @@ func main() {
 	}
 	baseDir := filepath.Dir(exePath)
 
-	portFlag := flag.String("port", "", "Override HTTP port (optional, otherwise loaded from DB or default 8080)")
+	portFlag := flag.String("port", "", "Override HTTP port")
 	dataDir := flag.String("data", filepath.Join(baseDir, "data"), "Local database directory")
 	backupDir := flag.String("backup", filepath.Join(baseDir, "backups"), "Backup directory (separated from data)")
 	tzName := flag.String("tz", "Asia/Shanghai", "Host business timezone")
 	noTray := flag.Bool("no-tray", false, "Disable system tray integration")
+	noOpen := flag.Bool("no-open", false, "Do not auto-open browser on startup")
+	autoStartMode := flag.Bool("autostart", false, "Launched silently by OS startup")
+	resetAdminPwd := flag.Bool("reset-admin-pwd", false, "Reset all admin accounts password to admin123 and exit")
 	flag.Parse()
 
 	if err := os.MkdirAll(*dataDir, 0700); err != nil {
@@ -203,6 +229,38 @@ func main() {
 		fmt.Fprintln(os.Stderr, "拒绝启动: 备份目录必须与数据库目录分离")
 		os.Exit(1)
 	}
+
+	activeURLFile := filepath.Join(*dataDir, "active.url")
+
+	// 命令行直接执行管理员密码重置模式（无需启动 HTTP，即使主实例在跑也可通过 SQLite WAL 安全写入）
+	if *resetAdminPwd {
+		loc, _ := time.LoadLocation(*tzName)
+		if loc == nil {
+			loc = time.Local
+		}
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		st, err := NewStore(filepath.Join(*dataDir, "taskhub.db"), *backupDir, loc, logger)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "打开数据库失败: %v\n", err)
+			os.Exit(1)
+		}
+		err = st.ResetAdminPasswords(context.Background())
+		_ = st.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "重置管理员密码失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("管理员密码已成功重置为初始密码: admin123")
+		return
+	}
+
+	// 单实例运行检测：若已有实例正在运行，直接打开对应网页并立即退出当前重复进程
+	releaseLock, alreadyRunning := acquireSingleInstance(*dataDir, activeURLFile)
+	if alreadyRunning {
+		openBrowser(resolveExistingInstanceURL(activeURLFile))
+		return
+	}
+	defer releaseLock()
 
 	logWriter, err := NewRotatingWriter(filepath.Join(*dataDir, "taskhub.log"), 10)
 	if err != nil {
@@ -234,23 +292,39 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 决定监听端口：命令行参数 > 数据库保存端口 > 默认 8080
+	// 支持物理文件触发重置密码：若 data/ 目录下存在 RESET_ADMIN_PASSWORD 文件，自动重置并删除该文件
+	resetTriggerFile := filepath.Join(*dataDir, "RESET_ADMIN_PASSWORD")
+	if _, err := os.Stat(resetTriggerFile); err == nil {
+		if rErr := store.ResetAdminPasswords(ctx); rErr == nil {
+			_ = os.Remove(resetTriggerFile)
+			slog.Warn("检测到物理重置文件 RESET_ADMIN_PASSWORD，已将管理员密码重置为 admin123")
+		}
+	}
+	for _, ext := range []string{".txt", ".flag"} {
+		if _, err := os.Stat(resetTriggerFile + ext); err == nil {
+			if rErr := store.ResetAdminPasswords(ctx); rErr == nil {
+				_ = os.Remove(resetTriggerFile + ext)
+				slog.Warn("检测到物理重置文件，已将管理员密码重置为 admin123")
+			}
+		}
+	}
+
 	port := store.GetSavedPort(ctx)
 	if *portFlag != "" {
 		port = *portFlag
 		_ = store.SetSavedPort(ctx, port)
 	}
 
-	// 启动补偿：立即检查并补齐今日周期任务（幂等，不回溯历史）
+	// 启动补偿：立即检查补齐今日周期任务及昨日遗留的“次日接班复核”任务
 	now := time.Now().In(loc)
 	if genCount, err := store.GeneratePeriodicTasks(ctx, now); err != nil {
-		slog.Error("启动补偿生成周期任务失败", "err", err)
+		slog.Error("启动补偿生成任务失败", "err", err)
 	} else if genCount > 0 {
-		slog.Info("启动补偿生成周期任务完成", "generated", genCount)
+		slog.Info("启动补偿生成周期与复核任务完成", "generated", genCount)
 	}
 
 	app := NewServer(store, port, logger)
-	httpMgr := NewHTTPManager(app.Routes(), logger, cancel)
+	httpMgr := NewHTTPManager(app.Routes(), activeURLFile, logger, cancel)
 	app.SetPortChanger(func(newPort string) error {
 		if newPort == httpMgr.CurrentPort() {
 			return nil
@@ -278,6 +352,14 @@ func main() {
 		"lan_url", fmt.Sprintf("http://%s:%s", detectLANIP(), port),
 	)
 
+	// 手动双击启动时，默认自动弹出浏览器打开管理页（开机静默自启或显式 -no-open 时不打扰）
+	if !*noOpen && !*autoStartMode {
+		go func() {
+			time.Sleep(220 * time.Millisecond)
+			openBrowser(getTrayLocalURL())
+		}()
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -300,10 +382,10 @@ func main() {
 	if *noTray {
 		<-ctx.Done()
 	} else {
-		runTray(ctx, cancel, procName, logger)
+		runTray(ctx, cancel, procName, store, logger)
 	}
 
-	slog.Info("正在关闭 HTTP 服务与后台任务...")
+	slog.Info("正在关闭 HTTP 服务与后台协程...")
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutCancel()
 
@@ -331,11 +413,11 @@ func main() {
 }
 
 func runScheduler(ctx context.Context, store *Store, loc *time.Location, logger *slog.Logger) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(45 * time.Second)
 	defer ticker.Stop()
 
 	lastGenDate := ""
-	lastBackupDate := ""
+	lastMaintDate := ""
 
 	for {
 		select {
@@ -351,21 +433,21 @@ func runScheduler(ctx context.Context, store *Store, loc *time.Location, logger 
 			if (now.Hour() > 0 || (now.Hour() == 0 && now.Minute() >= 5)) && lastGenDate != today {
 				n, err := store.GeneratePeriodicTasks(ctx, now)
 				if err != nil {
-					logger.Error("定时生成周期任务失败", "date", today, "err", err)
+					logger.Error("定时生成周期及复核任务失败", "date", today, "err", err)
 				} else {
 					lastGenDate = today
-					logger.Info("定时周期任务检查完成", "date", today, "generated", n)
+					logger.Info("定时周期与次日复核任务检查完成", "date", today, "generated", n)
 				}
 			}
 
-			if now.Hour() == 3 && lastBackupDate != today {
-				_ = store.CleanExpiredSessions(ctx, now)
+			if now.Hour() == 3 && lastMaintDate != today {
+				_ = store.RunDailyMaintenance(ctx, now)
 				backupFile, err := store.PerformBackup(ctx, now)
 				if err != nil {
 					logger.Error("每日自动备份失败", "date", today, "err", err)
 				} else {
-					lastBackupDate = today
-					logger.Info("每日自动备份及完整性校验成功", "file", backupFile)
+					lastMaintDate = today
+					logger.Info("每日自动维护与备份完整性校验成功", "file", backupFile)
 				}
 			}
 		}
