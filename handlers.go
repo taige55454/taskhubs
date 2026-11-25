@@ -79,7 +79,6 @@ func (s *Server) checkLoginAllowed(ip string) (bool, int) {
 	s.rateMu.Lock()
 	defer s.rateMu.Unlock()
 	now := time.Now()
-	// 顺带懒清理超过 30 分钟无活动的 IP 记录，防内存泄漏
 	if len(s.attempts) > 128 {
 		for k, v := range s.attempts {
 			if now.Sub(v.lastSeen) > 30*time.Minute {
@@ -148,6 +147,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/admin/schedule/import", s.withAuth(s.handleImportSchedule, true))
 	mux.HandleFunc("GET /api/admin/history-book", s.withAuth(s.handleHistoryBook, true))
 	mux.HandleFunc("POST /api/admin/people", s.withAuth(s.handleSavePerson, true))
+	mux.HandleFunc("POST /api/admin/people/clear-password", s.withAuth(s.handleAdminClearPersonPwd, true))
 	mux.HandleFunc("POST /api/admin/posts", s.withAuth(s.handleSavePost, true))
 	mux.HandleFunc("GET /api/admin/templates", s.withAuth(s.handleListTemplates, true))
 	mux.HandleFunc("POST /api/admin/templates", s.withAuth(s.handleSaveTemplate, true))
@@ -163,7 +163,6 @@ func (s *Server) Routes() http.Handler {
 		fileServer.ServeHTTP(w, r)
 	}))
 
-	// 统一安全中间件：防点击劫持、防 MIME 嗅探、限制请求体体积
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
@@ -619,6 +618,21 @@ func (s *Server) handleSavePerson(w http.ResponseWriter, r *http.Request, sess *
 		return
 	}
 	if err := s.store.SavePerson(r.Context(), req); err != nil {
+		writeJSON(w, mapErrStatus(err), map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAdminClearPersonPwd(w http.ResponseWriter, r *http.Request, sess *SessionInfo) {
+	var req struct {
+		PersonID int64 `json:"person_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "参数错误"})
+		return
+	}
+	if err := s.store.AdminClearMemberPassword(r.Context(), req.PersonID); err != nil {
 		writeJSON(w, mapErrStatus(err), map[string]any{"error": err.Error()})
 		return
 	}
