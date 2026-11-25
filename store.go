@@ -21,7 +21,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const DefaultAdminInitialPassword = "admin123"
+const (
+	DefaultAdminInitialPassword = "admin123"
+	FixedReviewColor            = "#D97706" // 次日接班复核任务全局固定琥珀金标签色
+)
 
 var (
 	ErrForbidden     = errors.New("无权执行此操作")
@@ -41,13 +44,16 @@ type Store struct {
 }
 
 type Person struct {
-	ID          int64  `json:"id"`
-	Nickname    string `json:"nickname"`
-	IsAdmin     bool   `json:"is_admin"`
-	InRota      bool   `json:"in_rota"`
-	HasPassword bool   `json:"has_password"`
-	IsActive    bool   `json:"is_active"`
-	CreatedAt   string `json:"created_at"`
+	ID            int64  `json:"id"`
+	Nickname      string `json:"nickname"`
+	IsAdmin       bool   `json:"is_admin"`
+	InRota        bool   `json:"in_rota"`
+	HasPassword   bool   `json:"has_password"`
+	RestWeekdays  string `json:"rest_weekdays"`   // 逗号分隔 0-6, 如 "0,6" 代表周末休息
+	RestMonthDays string `json:"rest_month_days"` // 逗号分隔, 支持 "5,18" (结合 rest_month) 或 "2026-11-28"
+	RestMonth     string `json:"rest_month"`      // 记录设置当月如 "2026-11", 防止纯日号跨月误判
+	IsActive      bool   `json:"is_active"`
+	CreatedAt     string `json:"created_at"`
 }
 
 type Post struct {
@@ -68,23 +74,32 @@ type TaskTemplate struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	CycleType   string `json:"cycle_type"` // daily | weekly | monthly
-	Weekdays    string `json:"weekdays"`   // 逗号分隔 0-6, 如 "1,3,5"
-	MonthDays   string `json:"month_days"` // 逗号分隔 1-31, 如 "1,15,31"
+	Weekdays    string `json:"weekdays"`
+	MonthDays   string `json:"month_days"`
+	NeedReview  bool   `json:"need_review"` // 是否需次日接班伙伴复核
 	IsActive    bool   `json:"is_active"`
 	CreatedAt   string `json:"created_at"`
 }
 
 type TaskInstance struct {
 	ID                 int64   `json:"id"`
-	Source             string  `json:"source"` // template | adhoc
+	Source             string  `json:"source"` // template | adhoc | review
 	TemplateID         *int64  `json:"template_id"`
 	PostID             *int64  `json:"post_id"`
 	PostName           string  `json:"post_name"`
 	PostColor          string  `json:"post_color"`
+	BadgeColor         string  `json:"badge_color"` // 普通任务等于岗位色，复核任务固定为 #D97706
 	Title              string  `json:"title"`
 	Description        string  `json:"description"`
 	PeriodKey          *string `json:"period_key"`
 	BusinessDate       string  `json:"business_date"`
+	NeedReview         bool    `json:"need_review"`
+	ReviewOfTaskID     *int64  `json:"review_of_task_id"`
+	ParentDate         string  `json:"parent_date,omitempty"`
+	ParentStatus       string  `json:"parent_status,omitempty"`
+	ParentAssigneeName string  `json:"parent_assignee_name,omitempty"`
+	ParentCompletedBy  string  `json:"parent_completed_by,omitempty"`
+	ParentCompletedAt  string  `json:"parent_completed_at,omitempty"`
 	OriginalAssigneeID *int64  `json:"original_assignee_id"`
 	OriginalName       string  `json:"original_assignee_name"`
 	CurrentAssigneeID  *int64  `json:"current_assignee_id"`
@@ -122,7 +137,7 @@ type ScheduleEntry struct {
 	ScheduleDate string `json:"schedule_date"`
 	PostID       int64  `json:"post_id"`
 	PostName     string `json:"post_name,omitempty"`
-	PersonID     int64  `json:"person_id"` // 0 表示清空该日该岗排班
+	PersonID     int64  `json:"person_id"`
 	PersonName   string `json:"person_name,omitempty"`
 }
 
@@ -167,8 +182,7 @@ func buildDSN(dbPath string, readOnly bool) string {
 		"_pragma=busy_timeout(5000)",
 		"_pragma=foreign_keys(ON)",
 		"_pragma=temp_store(MEMORY)",
-		"_pragma=cache_size(-64000)",
-		"_pragma=mmap_size(134217728)",
+		"_pragma=cache_size(-32000)", // 优化为 32MB 页缓存，降低常驻内存浪费
 	}
 	if readOnly {
 		pragmas = append(pragmas, "_pragma=query_only(ON)")
@@ -202,8 +216,9 @@ func NewStore(dbPath, backupDir string, loc *time.Location, logger *slog.Logger)
 		_ = writeDB.Close()
 		return nil, err
 	}
-	readDB.SetMaxOpenConns(8)
-	readDB.SetMaxIdleConns(4)
+	readDB.SetMaxOpenConns(6)
+	readDB.SetMaxIdleConns(3)
+	readDB.SetConnMaxIdleTime(10 * time.Minute)
 
 	s := &Store{
 		writeDB:   writeDB,
@@ -254,6 +269,7 @@ func (s *Store) SelfCheck(ctx context.Context) error {
 
 func (s *Store) Close() error {
 	_, _ = s.writeDB.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+	_, _ = s.writeDB.Exec("PRAGMA optimize;")
 	err1 := s.readDB.Close()
 	err2 := s.writeDB.Close()
 	if err1 != nil {
@@ -274,13 +290,16 @@ CREATE TABLE IF NOT EXISTS app_kv (
 );
 
 CREATE TABLE IF NOT EXISTS person (
-	id            INTEGER PRIMARY KEY AUTOINCREMENT,
-	nickname      TEXT    NOT NULL,
-	password_hash TEXT    NOT NULL DEFAULT '',
-	is_admin      INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
-	in_rota       INTEGER NOT NULL DEFAULT 1 CHECK (in_rota IN (0, 1)),
-	is_active     INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-	created_at    TEXT    NOT NULL
+	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	nickname        TEXT    NOT NULL,
+	password_hash   TEXT    NOT NULL DEFAULT '',
+	is_admin        INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1)),
+	in_rota         INTEGER NOT NULL DEFAULT 1 CHECK (in_rota IN (0, 1)),
+	rest_weekdays   TEXT    NOT NULL DEFAULT '',
+	rest_month_days TEXT    NOT NULL DEFAULT '',
+	rest_month      TEXT    NOT NULL DEFAULT '',
+	is_active       INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+	created_at      TEXT    NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_person_nickname ON person(nickname);
 
@@ -302,6 +321,7 @@ CREATE TABLE IF NOT EXISTS task_template (
 	cycle_type  TEXT    NOT NULL CHECK (cycle_type IN ('daily', 'weekly', 'monthly')),
 	weekdays    TEXT    NOT NULL DEFAULT '',
 	month_days  TEXT    NOT NULL DEFAULT '',
+	need_review INTEGER NOT NULL DEFAULT 0 CHECK (need_review IN (0, 1)),
 	is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
 	created_at  TEXT    NOT NULL,
 	FOREIGN KEY (post_id) REFERENCES post(id) ON DELETE RESTRICT
@@ -323,13 +343,15 @@ CREATE INDEX IF NOT EXISTS idx_post_schedule_stats ON post_schedule(post_id, per
 
 CREATE TABLE IF NOT EXISTS task_instance (
 	id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-	source               TEXT    NOT NULL DEFAULT 'template' CHECK (source IN ('template', 'adhoc')),
+	source               TEXT    NOT NULL DEFAULT 'template' CHECK (source IN ('template', 'adhoc', 'review')),
 	template_id          INTEGER NULL,
 	post_id              INTEGER NULL,
 	title                TEXT    NOT NULL,
 	description          TEXT    NOT NULL DEFAULT '',
 	period_key           TEXT    NULL,
 	business_date        TEXT    NOT NULL,
+	need_review          INTEGER NOT NULL DEFAULT 0 CHECK (need_review IN (0, 1)),
+	review_of_task_id    INTEGER NULL,
 	original_assignee_id INTEGER NULL,
 	current_assignee_id  INTEGER NULL,
 	status               TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'not_applicable', 'cancelled')),
@@ -343,19 +365,13 @@ CREATE TABLE IF NOT EXISTS task_instance (
 	created_at           TEXT    NOT NULL,
 	FOREIGN KEY (template_id)          REFERENCES task_template(id) ON DELETE RESTRICT,
 	FOREIGN KEY (post_id)              REFERENCES post(id)          ON DELETE RESTRICT,
+	FOREIGN KEY (review_of_task_id)    REFERENCES task_instance(id) ON DELETE RESTRICT,
 	FOREIGN KEY (original_assignee_id) REFERENCES person(id)        ON DELETE RESTRICT,
 	FOREIGN KEY (current_assignee_id)  REFERENCES person(id)        ON DELETE RESTRICT,
 	FOREIGN KEY (completed_by)         REFERENCES person(id)        ON DELETE RESTRICT,
 	FOREIGN KEY (not_applicable_by)    REFERENCES person(id)        ON DELETE RESTRICT,
 	FOREIGN KEY (cancelled_by)         REFERENCES person(id)        ON DELETE RESTRICT
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS uk_task_instance_tmpl_bizdate
-	ON task_instance(template_id, business_date) WHERE template_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_task_assignee_date_status
-	ON task_instance(current_assignee_id, business_date, status);
-CREATE INDEX IF NOT EXISTS idx_task_business_date
-	ON task_instance(business_date, post_id, status);
 
 CREATE TABLE IF NOT EXISTS handover_record (
 	id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -386,23 +402,120 @@ CREATE INDEX IF NOT EXISTS idx_session_expires ON session(expires_at);
 		return err
 	}
 
-	// 平滑兼容旧版数据库升级补列与迁移索引
+	// 平滑增量补列
 	alterStmts := []string{
 		"ALTER TABLE person ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE person ADD COLUMN in_rota INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE person ADD COLUMN rest_weekdays TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE person ADD COLUMN rest_month_days TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE person ADD COLUMN rest_month TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE post ADD COLUMN color TEXT NOT NULL DEFAULT '#007AFF'",
 		"ALTER TABLE task_template ADD COLUMN weekdays TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE task_template ADD COLUMN month_days TEXT NOT NULL DEFAULT ''",
-		"DROP INDEX IF EXISTS uk_task_instance_template_period",
-		"CREATE UNIQUE INDEX IF NOT EXISTS uk_task_instance_tmpl_bizdate ON task_instance(template_id, business_date) WHERE template_id IS NOT NULL",
+		"ALTER TABLE task_template ADD COLUMN need_review INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE task_instance ADD COLUMN need_review INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE task_instance ADD COLUMN review_of_task_id INTEGER NULL",
 	}
 	for _, st := range alterStmts {
 		_, _ = db.Exec(st)
 	}
+
+	// 若从旧版升级上来，旧表 task_instance 的 CHECK 约束仅允许 ('template','adhoc')，安全无损重建以支持 'review'
+	var tblSQL string
+	_ = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='task_instance'").Scan(&tblSQL)
+	if tblSQL != "" && !strings.Contains(tblSQL, "'review'") {
+		if err := rebuildTaskInstanceForReview(db); err != nil {
+			return err
+		}
+	}
+
+	// 确保全部唯一索引与复合查询索引齐全
+	idxStmts := []string{
+		"DROP INDEX IF EXISTS uk_task_instance_template_period",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uk_task_instance_tmpl_bizdate ON task_instance(template_id, business_date) WHERE template_id IS NOT NULL",
+		"CREATE UNIQUE INDEX IF NOT EXISTS uk_task_instance_review_of ON task_instance(review_of_task_id) WHERE review_of_task_id IS NOT NULL",
+		"CREATE INDEX IF NOT EXISTS idx_task_assignee_date_status ON task_instance(current_assignee_id, business_date, status)",
+		"CREATE INDEX IF NOT EXISTS idx_task_business_date ON task_instance(business_date, post_id, status)",
+	}
+	for _, st := range idxStmts {
+		if _, err := db.Exec(st); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// ==================== 密码加盐迭代哈希 ====================
+func rebuildTaskInstanceForReview(db *sql.DB) error {
+	_, _ = db.Exec("PRAGMA foreign_keys = OFF;")
+	defer func() { _, _ = db.Exec("PRAGMA foreign_keys = ON;") }()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`
+CREATE TABLE task_instance_v2 (
+	id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+	source               TEXT    NOT NULL DEFAULT 'template' CHECK (source IN ('template', 'adhoc', 'review')),
+	template_id          INTEGER NULL,
+	post_id              INTEGER NULL,
+	title                TEXT    NOT NULL,
+	description          TEXT    NOT NULL DEFAULT '',
+	period_key           TEXT    NULL,
+	business_date        TEXT    NOT NULL,
+	need_review          INTEGER NOT NULL DEFAULT 0 CHECK (need_review IN (0, 1)),
+	review_of_task_id    INTEGER NULL,
+	original_assignee_id INTEGER NULL,
+	current_assignee_id  INTEGER NULL,
+	status               TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'not_applicable', 'cancelled')),
+	completed_by         INTEGER NULL,
+	completed_at         TEXT    NULL,
+	not_applicable_by    INTEGER NULL,
+	not_applicable_at    TEXT    NULL,
+	not_applicable_note  TEXT    NULL,
+	cancelled_by         INTEGER NULL,
+	cancelled_at         TEXT    NULL,
+	created_at           TEXT    NOT NULL,
+	FOREIGN KEY (template_id)          REFERENCES task_template(id) ON DELETE RESTRICT,
+	FOREIGN KEY (post_id)              REFERENCES post(id)          ON DELETE RESTRICT,
+	FOREIGN KEY (review_of_task_id)    REFERENCES task_instance(id) ON DELETE RESTRICT,
+	FOREIGN KEY (original_assignee_id) REFERENCES person(id)        ON DELETE RESTRICT,
+	FOREIGN KEY (current_assignee_id)  REFERENCES person(id)        ON DELETE RESTRICT,
+	FOREIGN KEY (completed_by)         REFERENCES person(id)        ON DELETE RESTRICT,
+	FOREIGN KEY (not_applicable_by)    REFERENCES person(id)        ON DELETE RESTRICT,
+	FOREIGN KEY (cancelled_by)         REFERENCES person(id)        ON DELETE RESTRICT
+);`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`
+INSERT INTO task_instance_v2 (
+	id, source, template_id, post_id, title, description, period_key, business_date,
+	need_review, review_of_task_id, original_assignee_id, current_assignee_id, status,
+	completed_by, completed_at, not_applicable_by, not_applicable_at, not_applicable_note,
+	cancelled_by, cancelled_at, created_at
+)
+SELECT
+	id, source, template_id, post_id, title, description, period_key, business_date,
+	COALESCE(need_review, 0), review_of_task_id, original_assignee_id, current_assignee_id, status,
+	completed_by, completed_at, not_applicable_by, not_applicable_at, not_applicable_note,
+	cancelled_by, cancelled_at, created_at
+FROM task_instance;`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec("DROP TABLE task_instance;"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("ALTER TABLE task_instance_v2 RENAME TO task_instance;"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ==================== 密码哈希与主机物理重置管理员密码 ====================
 
 func hashPassword(plain string) string {
 	salt := make([]byte, 16)
@@ -458,7 +571,6 @@ func (s *Store) ensureBootstrapAdmin(ctx context.Context) error {
 			_, _ = conn.ExecContext(ctx, "INSERT OR IGNORE INTO app_kv(k, v) VALUES('admin_using_default_pwd', '1')")
 			return nil
 		}
-		// 若从旧版无密码升级上来，确保所有管理员账号至少拥有初始默认密码
 		rows, err := conn.QueryContext(ctx, "SELECT id FROM person WHERE is_admin = 1 AND password_hash = ''")
 		if err != nil {
 			return err
@@ -474,6 +586,42 @@ func (s *Store) ensureBootstrapAdmin(ctx context.Context) error {
 			_, _ = conn.ExecContext(ctx, "UPDATE person SET password_hash = ? WHERE id = ?", hashPassword(DefaultAdminInitialPassword), id)
 			_, _ = conn.ExecContext(ctx, "INSERT OR REPLACE INTO app_kv(k, v) VALUES('admin_using_default_pwd', '1')")
 		}
+		return nil
+	})
+}
+
+// ResetAdminPasswords 将所有管理员账号密码安全重置为默认密码 admin123（仅供主机托盘或本地命令行调用）
+func (s *Store) ResetAdminPasswords(ctx context.Context) error {
+	return s.withWriteTx(ctx, func(conn *sql.Conn) error {
+		rows, err := conn.QueryContext(ctx, "SELECT id FROM person WHERE is_admin = 1")
+		if err != nil {
+			return err
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			_ = rows.Scan(&id)
+			ids = append(ids, id)
+		}
+		rows.Close()
+
+		if len(ids) == 0 {
+			_, err := conn.ExecContext(ctx,
+				"INSERT INTO person(nickname, password_hash, is_admin, in_rota, is_active, created_at) VALUES(?, ?, 1, 0, 1, ?)",
+				"主机管理员", hashPassword(DefaultAdminInitialPassword), s.NowISO())
+			if err != nil {
+				return err
+			}
+		} else {
+			for _, id := range ids {
+				if _, err := conn.ExecContext(ctx,
+					"UPDATE person SET password_hash = ?, is_active = 1 WHERE id = ?",
+					hashPassword(DefaultAdminInitialPassword), id); err != nil {
+					return err
+				}
+			}
+		}
+		_, _ = conn.ExecContext(ctx, "INSERT OR REPLACE INTO app_kv(k, v) VALUES('admin_using_default_pwd', '1')")
 		return nil
 	})
 }
@@ -563,7 +711,7 @@ func randomHex(bytesLen int) string {
 	return hex.EncodeToString(b)
 }
 
-// ==================== 认证与密码管理 ====================
+// ==================== 认证与会话管理 ====================
 
 func (s *Store) Login(ctx context.Context, nickname, password string) (*SessionInfo, error) {
 	nickname = strings.TrimSpace(nickname)
@@ -573,9 +721,11 @@ func (s *Store) Login(ctx context.Context, nickname, password string) (*SessionI
 	var p Person
 	var pwdHash string
 	var isAdmin, inRota, isActive int
-	err := s.readDB.QueryRowContext(ctx,
-		"SELECT id, nickname, password_hash, is_admin, in_rota, is_active, created_at FROM person WHERE nickname = ?",
-		nickname).Scan(&p.ID, &p.Nickname, &pwdHash, &isAdmin, &inRota, &isActive, &p.CreatedAt)
+	err := s.readDB.QueryRowContext(ctx, `
+		SELECT id, nickname, password_hash, is_admin, in_rota, rest_weekdays, rest_month_days, rest_month, is_active, created_at
+		FROM person WHERE nickname = ?`, nickname).Scan(
+		&p.ID, &p.Nickname, &pwdHash, &isAdmin, &inRota, &p.RestWeekdays, &p.RestMonthDays, &p.RestMonth, &isActive, &p.CreatedAt,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -586,7 +736,6 @@ func (s *Store) Login(ctx context.Context, nickname, password string) (*SessionI
 		return nil, errors.New("该账号已停用，请联系管理员")
 	}
 
-	// 管理员或已设密码成员必须通过密码校验；未设密码普通成员允许直接登录
 	if isAdmin == 1 || pwdHash != "" {
 		if password == "" || !verifyPassword(password, pwdHash) {
 			return nil, ErrAuthFailed
@@ -666,12 +815,15 @@ func (s *Store) GetSession(ctx context.Context, token string) (*SessionInfo, err
 	var isAdmin, inRota, isActive int
 	err := s.readDB.QueryRowContext(ctx, `
 		SELECT s.token, s.csrf_token, s.expires_at,
-		       p.id, p.nickname, p.password_hash, p.is_admin, p.in_rota, p.is_active, p.created_at
+		       p.id, p.nickname, p.password_hash, p.is_admin, p.in_rota,
+		       p.rest_weekdays, p.rest_month_days, p.rest_month, p.is_active, p.created_at
 		FROM session s
 		JOIN person p ON p.id = s.person_id
 		WHERE s.token = ?`, token).Scan(
 		&info.Token, &info.CSRFToken, &expiresAt,
-		&info.Person.ID, &info.Person.Nickname, &pwdHash, &isAdmin, &inRota, &isActive, &info.Person.CreatedAt,
+		&info.Person.ID, &info.Person.Nickname, &pwdHash, &isAdmin, &inRota,
+		&info.Person.RestWeekdays, &info.Person.RestMonthDays, &info.Person.RestMonth,
+		&isActive, &info.Person.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -700,17 +852,104 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	})
 }
 
-func (s *Store) CleanExpiredSessions(ctx context.Context, now time.Time) error {
-	return s.withWriteTx(ctx, func(conn *sql.Conn) error {
-		_, err := conn.ExecContext(ctx, "DELETE FROM session WHERE expires_at < ?", now.Format(time.RFC3339))
-		return err
+// RunDailyMaintenance 每日垃圾清理与索引统计优化
+func (s *Store) RunDailyMaintenance(ctx context.Context, now time.Time) error {
+	_ = s.withWriteTx(ctx, func(conn *sql.Conn) error {
+		_, _ = conn.ExecContext(ctx, "DELETE FROM session WHERE expires_at < ?", now.Format(time.RFC3339))
+		return nil
 	})
+	_, _ = s.writeDB.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE);")
+	_, _ = s.writeDB.ExecContext(ctx, "PRAGMA optimize;")
+	return nil
 }
 
-// ==================== 人员 / 岗位 / 模板管理 ====================
+// ==================== 人员（含周休与当月/指定日调休配置） ====================
+
+func normalizeRestMonthDays(raw string, loc *time.Location) (string, error) {
+	raw = strings.ReplaceAll(raw, "，", ",")
+	raw = strings.ReplaceAll(raw, "、", ",")
+	raw = strings.ReplaceAll(raw, " ", ",")
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	seen := make(map[string]bool)
+	var items []string
+	for _, tok := range strings.Split(raw, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		// 支持输入完整日期 YYYY-MM-DD
+		normDate := strings.ReplaceAll(strings.ReplaceAll(tok, "/", "-"), ".", "-")
+		if strings.Count(normDate, "-") == 2 {
+			t, err := time.ParseInLocation("2006-1-2", normDate, loc)
+			if err != nil {
+				t, err = time.ParseInLocation("2006-01-02", normDate, loc)
+			}
+			if err != nil {
+				return "", fmt.Errorf("无效的调休日期格式 %q", tok)
+			}
+			dStr := t.Format("2006-01-02")
+			if !seen[dStr] {
+				seen[dStr] = true
+				items = append(items, dStr)
+			}
+			continue
+		}
+		// 支持输入当月几号 1~31
+		dayNum, err := strconv.Atoi(strings.TrimSuffix(tok, "日"))
+		if err != nil {
+			dayNum, err = strconv.Atoi(strings.TrimSuffix(tok, "号"))
+		}
+		if err != nil || dayNum < 1 || dayNum > 31 {
+			return "", fmt.Errorf("无效的休息日号 %q（请输入 1~31 或 YYYY-MM-DD）", tok)
+		}
+		k := strconv.Itoa(dayNum)
+		if !seen[k] {
+			seen[k] = true
+			items = append(items, k)
+		}
+	}
+	return strings.Join(items, ","), nil
+}
+
+// isPersonRestingOn 判断伙伴在指定日期是否处于休息状态（命中固定周休 或 命中当月/指定日调休）
+func isPersonRestingOn(p Person, t time.Time) bool {
+	wd := int(t.Weekday())
+	for _, d := range parseSavedInts(p.RestWeekdays) {
+		if d == wd {
+			return true
+		}
+	}
+	if strings.TrimSpace(p.RestMonthDays) == "" {
+		return false
+	}
+	fullDate := t.Format("2006-01-02")
+	curMonth := t.Format("2006-01")
+	dayNum := t.Day()
+	for _, tok := range strings.Split(p.RestMonthDays, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		if strings.Contains(tok, "-") {
+			if tok == fullDate {
+				return true
+			}
+		} else if v, err := strconv.Atoi(tok); err == nil {
+			// 纯日号若记录了所属月份，仅在该月生效（防止本月临时调休跨月污染下月）；未记录月份则每月通用
+			if (p.RestMonth == "" || p.RestMonth == curMonth) && v == dayNum {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func (s *Store) ListPeople(ctx context.Context, activeOnly bool) ([]Person, error) {
-	q := "SELECT id, nickname, password_hash, is_admin, in_rota, is_active, created_at FROM person"
+	q := `SELECT id, nickname, password_hash, is_admin, in_rota,
+	             rest_weekdays, rest_month_days, rest_month, is_active, created_at
+	      FROM person`
 	if activeOnly {
 		q += " WHERE is_active = 1"
 	}
@@ -725,7 +964,8 @@ func (s *Store) ListPeople(ctx context.Context, activeOnly bool) ([]Person, erro
 		var p Person
 		var pwdHash string
 		var adm, rota, act int
-		if err := rows.Scan(&p.ID, &p.Nickname, &pwdHash, &adm, &rota, &act, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Nickname, &pwdHash, &adm, &rota,
+			&p.RestWeekdays, &p.RestMonthDays, &p.RestMonth, &act, &p.CreatedAt); err != nil {
 			return nil, err
 		}
 		p.IsAdmin = adm == 1
@@ -740,10 +980,13 @@ func (s *Store) ListPeople(ctx context.Context, activeOnly bool) ([]Person, erro
 type PersonSaveInput struct {
 	ID            int64  `json:"id"`
 	Nickname      string `json:"nickname"`
-	Password      string `json:"password"`       // 非空则更新密码
-	ClearPassword bool   `json:"clear_password"` // true 则清空密码（仅非管理员允许）
+	Password      string `json:"password"`
+	ClearPassword bool   `json:"clear_password"`
 	IsAdmin       bool   `json:"is_admin"`
 	InRota        bool   `json:"in_rota"`
+	RestWeekdays  string `json:"rest_weekdays"`
+	RestMonthDays string `json:"rest_month_days"`
+	RestMonth     string `json:"rest_month"`
 	IsActive      bool   `json:"is_active"`
 }
 
@@ -752,6 +995,27 @@ func (s *Store) SavePerson(ctx context.Context, in PersonSaveInput) error {
 	if in.Nickname == "" {
 		return ErrBadInput
 	}
+
+	normWeek := ""
+	if strings.TrimSpace(in.RestWeekdays) != "" {
+		_, nw, err := normalizeIntCSV(in.RestWeekdays, 0, 6)
+		if err != nil {
+			return errors.New("每周休息日格式不正确")
+		}
+		normWeek = nw
+	}
+	normMonthDays, err := normalizeRestMonthDays(in.RestMonthDays, s.loc)
+	if err != nil {
+		return err
+	}
+	restMonth := strings.TrimSpace(in.RestMonth)
+	if normMonthDays != "" && restMonth == "" {
+		restMonth = s.Now().Format("2006-01")
+	}
+	if normMonthDays == "" {
+		restMonth = ""
+	}
+
 	adm, rota, act := 0, 0, 0
 	if in.IsAdmin {
 		adm = 1
@@ -775,9 +1039,10 @@ func (s *Store) SavePerson(ctx context.Context, in PersonSaveInput) error {
 				}
 				pwdHash = hashPassword(in.Password)
 			}
-			_, err := conn.ExecContext(ctx,
-				"INSERT INTO person(nickname, password_hash, is_admin, in_rota, is_active, created_at) VALUES(?, ?, ?, ?, 1, ?)",
-				in.Nickname, pwdHash, adm, rota, s.NowISO())
+			_, err := conn.ExecContext(ctx, `
+				INSERT INTO person(nickname, password_hash, is_admin, in_rota, rest_weekdays, rest_month_days, rest_month, is_active, created_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+				in.Nickname, pwdHash, adm, rota, normWeek, normMonthDays, restMonth, s.NowISO())
 			return err
 		}
 
@@ -815,12 +1080,17 @@ func (s *Store) SavePerson(ctx context.Context, in PersonSaveInput) error {
 			return errors.New("升级为管理员时必须同时设置登录密码")
 		}
 
-		_, err := conn.ExecContext(ctx,
-			"UPDATE person SET nickname = ?, password_hash = ?, is_admin = ?, in_rota = ?, is_active = ? WHERE id = ?",
-			in.Nickname, newHash, adm, rota, act, in.ID)
+		_, err := conn.ExecContext(ctx, `
+			UPDATE person
+			SET nickname = ?, password_hash = ?, is_admin = ?, in_rota = ?,
+			    rest_weekdays = ?, rest_month_days = ?, rest_month = ?, is_active = ?
+			WHERE id = ?`,
+			in.Nickname, newHash, adm, rota, normWeek, normMonthDays, restMonth, act, in.ID)
 		return err
 	})
 }
+
+// ==================== 岗位与周期任务模板 ====================
 
 func sanitizeColor(c string) string {
 	c = strings.TrimSpace(c)
@@ -884,7 +1154,6 @@ func (s *Store) SavePost(ctx context.Context, id int64, name, color string, sort
 	})
 }
 
-// normalizeIntCSV 规范化并校验逗号分隔的数字列表（如 weekdays 0-6, month_days 1-31）
 func normalizeIntCSV(raw string, minVal, maxVal int) ([]int, string, error) {
 	raw = strings.ReplaceAll(raw, "，", ",")
 	raw = strings.ReplaceAll(raw, "、", ",")
@@ -906,7 +1175,7 @@ func normalizeIntCSV(raw string, minVal, maxVal int) ([]int, string, error) {
 		}
 	}
 	if len(nums) == 0 {
-		return nil, "", fmt.Errorf("请至少选择或输入一个有效日期 (%d~%d)", minVal, maxVal)
+		return nil, "", fmt.Errorf("请至少选择或输入一个有效数字 (%d~%d)", minVal, maxVal)
 	}
 	sort.Ints(nums)
 	strs := make([]string, len(nums))
@@ -930,7 +1199,7 @@ func parseSavedInts(csvStr string) []int {
 func (s *Store) ListTemplates(ctx context.Context) ([]TaskTemplate, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT t.id, t.post_id, p.name, p.color, p.sort_order,
-		       t.title, t.description, t.cycle_type, t.weekdays, t.month_days, t.is_active, t.created_at
+		       t.title, t.description, t.cycle_type, t.weekdays, t.month_days, t.need_review, t.is_active, t.created_at
 		FROM task_template t
 		JOIN post p ON p.id = t.post_id
 		ORDER BY
@@ -943,19 +1212,19 @@ func (s *Store) ListTemplates(ctx context.Context) ([]TaskTemplate, error) {
 	var list []TaskTemplate
 	for rows.Next() {
 		var t TaskTemplate
-		var act int
+		var nr, act int
 		if err := rows.Scan(&t.ID, &t.PostID, &t.PostName, &t.PostColor, &t.PostSort,
-			&t.Title, &t.Description, &t.CycleType, &t.Weekdays, &t.MonthDays, &act, &t.CreatedAt); err != nil {
+			&t.Title, &t.Description, &t.CycleType, &t.Weekdays, &t.MonthDays, &nr, &act, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		t.PostColor = sanitizeColor(t.PostColor)
+		t.NeedReview = nr == 1
 		t.IsActive = act == 1
 		list = append(list, t)
 	}
 	return list, rows.Err()
 }
 
-// CreateOrUpdateTemplate 支持每周多天（如 1,3,5）及每月多天（如 1,15,31，含月末自适应），满足今日触发条件立即生成今日实例
 func (s *Store) CreateOrUpdateTemplate(ctx context.Context, tmpl TaskTemplate, now time.Time) (int64, error) {
 	tmpl.Title = strings.TrimSpace(tmpl.Title)
 	tmpl.Description = strings.TrimSpace(tmpl.Description)
@@ -984,14 +1253,19 @@ func (s *Store) CreateOrUpdateTemplate(ctx context.Context, tmpl TaskTemplate, n
 		return 0, ErrBadInput
 	}
 
+	nrInt := 0
+	if tmpl.NeedReview {
+		nrInt = 1
+	}
+
 	now = now.In(s.loc)
 	var outID int64
 	err := s.withWriteTx(ctx, func(conn *sql.Conn) error {
 		if tmpl.ID == 0 {
 			res, err := conn.ExecContext(ctx, `
-				INSERT INTO task_template(post_id, title, description, cycle_type, weekdays, month_days, is_active, created_at)
-				VALUES(?, ?, ?, ?, ?, ?, 1, ?)`,
-				tmpl.PostID, tmpl.Title, tmpl.Description, tmpl.CycleType, tmpl.Weekdays, tmpl.MonthDays, now.Format(time.RFC3339))
+				INSERT INTO task_template(post_id, title, description, cycle_type, weekdays, month_days, need_review, is_active, created_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+				tmpl.PostID, tmpl.Title, tmpl.Description, tmpl.CycleType, tmpl.Weekdays, tmpl.MonthDays, nrInt, now.Format(time.RFC3339))
 			if err != nil {
 				return err
 			}
@@ -1006,9 +1280,9 @@ func (s *Store) CreateOrUpdateTemplate(ctx context.Context, tmpl TaskTemplate, n
 			outID = tmpl.ID
 			_, err := conn.ExecContext(ctx, `
 				UPDATE task_template
-				SET post_id = ?, title = ?, description = ?, cycle_type = ?, weekdays = ?, month_days = ?, is_active = ?
+				SET post_id = ?, title = ?, description = ?, cycle_type = ?, weekdays = ?, month_days = ?, need_review = ?, is_active = ?
 				WHERE id = ?`,
-				tmpl.PostID, tmpl.Title, tmpl.Description, tmpl.CycleType, tmpl.Weekdays, tmpl.MonthDays, act, tmpl.ID)
+				tmpl.PostID, tmpl.Title, tmpl.Description, tmpl.CycleType, tmpl.Weekdays, tmpl.MonthDays, nrInt, act, tmpl.ID)
 			if err != nil {
 				return err
 			}
@@ -1029,15 +1303,12 @@ func (s *Store) CreateOrUpdateTemplate(ctx context.Context, tmpl TaskTemplate, n
 	return outID, err
 }
 
-// ==================== 多天周期触发与月末最后一天智能收敛 ====================
+// ==================== 周期任务生成 + 次日接班复核任务自动生成 ====================
 
 func daysInMonthOf(y int, m time.Month, loc *time.Location) int {
 	return time.Date(y, m+1, 0, 0, 0, 0, 0, loc).Day()
 }
 
-// shouldTriggerTemplateOnDate 判断指定业务日是否命中模板：
-// - weekly 支持多天（如 1,3,5）
-// - monthly 支持多天（如 1,15,31），且当设置日期 > 当月最大天数（28/29/30）时自动收敛为当月最后一天派发
 func shouldTriggerTemplateOnDate(t TaskTemplate, date time.Time) bool {
 	switch t.CycleType {
 	case "daily":
@@ -1068,49 +1339,91 @@ func shouldTriggerTemplateOnDate(t TaskTemplate, date time.Time) bool {
 	}
 }
 
+func resolveScheduledPersonTx(ctx context.Context, conn *sql.Conn, postID int64, bizDate string) sql.NullInt64 {
+	var assigneeID sql.NullInt64
+	if postID > 0 {
+		_ = conn.QueryRowContext(ctx, `
+			SELECT ps.person_id
+			FROM post_schedule ps
+			JOIN person p ON p.id = ps.person_id AND p.is_active = 1
+			WHERE ps.post_id = ? AND ps.schedule_date = ?
+			LIMIT 1`, postID, bizDate).Scan(&assigneeID)
+	}
+	return assigneeID
+}
+
 func insertTemplateInstanceTx(ctx context.Context, conn *sql.Conn, t TaskTemplate, now time.Time) (int64, error) {
 	bizDate := now.Format("2006-01-02")
-
-	// 自动查询当日排班表 post_schedule 是否有预排当值人
-	var assigneeID sql.NullInt64
-	err := conn.QueryRowContext(ctx, `
-		SELECT ps.person_id
-		FROM post_schedule ps
-		JOIN person p ON p.id = ps.person_id AND p.is_active = 1
-		WHERE ps.post_id = ? AND ps.schedule_date = ?
-		LIMIT 1`,
-		t.PostID, bizDate).Scan(&assigneeID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
+	assigneeID := resolveScheduledPersonTx(ctx, conn, t.PostID, bizDate)
 
 	var origPtr, currPtr any
 	if assigneeID.Valid {
 		origPtr = assigneeID.Int64
 		currPtr = assigneeID.Int64
 	}
+	nrInt := 0
+	if t.NeedReview {
+		nrInt = 1
+	}
 
 	res, err := conn.ExecContext(ctx, `
 		INSERT INTO task_instance(
 			source, template_id, post_id, title, description,
-			period_key, business_date, original_assignee_id, current_assignee_id,
+			period_key, business_date, need_review, original_assignee_id, current_assignee_id,
 			status, created_at
-		) VALUES('template', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+		) VALUES('template', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
 		ON CONFLICT(template_id, business_date) WHERE template_id IS NOT NULL DO NOTHING`,
 		t.ID, t.PostID, t.Title, t.Description,
-		bizDate, bizDate, origPtr, currPtr, now.Format(time.RFC3339))
+		bizDate, bizDate, nrInt, origPtr, currPtr, now.Format(time.RFC3339))
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
 }
 
+// insertReviewTaskForParentTx 为昨日需复核任务在今日生成“次日接班复核”卡片（幂等：受 uk_task_instance_review_of 保护）
+func insertReviewTaskForParentTx(ctx context.Context, conn *sql.Conn, parentID int64, postID sql.NullInt64, parentTitle, parentDesc, reviewBizDate, nowISO string) (int64, error) {
+	var postPtr, origPtr, currPtr any
+	if postID.Valid && postID.Int64 > 0 {
+		postPtr = postID.Int64
+		sched := resolveScheduledPersonTx(ctx, conn, postID.Int64, reviewBizDate)
+		if sched.Valid {
+			origPtr = sched.Int64
+			currPtr = sched.Int64
+		}
+	}
+
+	reviewDesc := "请接班伙伴现场核查昨日该项任务是否真实、规范落实到位。"
+	if parentDesc != "" {
+		reviewDesc += "\n原任务标准：" + parentDesc
+	}
+
+	res, err := conn.ExecContext(ctx, `
+		INSERT INTO task_instance(
+			source, template_id, post_id, title, description,
+			period_key, business_date, need_review, review_of_task_id,
+			original_assignee_id, current_assignee_id, status, created_at
+		) VALUES('review', NULL, ?, ?, ?, NULL, ?, 0, ?, ?, ?, 'pending', ?)
+		ON CONFLICT(review_of_task_id) WHERE review_of_task_id IS NOT NULL DO NOTHING`,
+		postPtr, parentTitle, reviewDesc, reviewBizDate, parentID, origPtr, currPtr, nowISO)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// GeneratePeriodicTasks 生成今日周期任务 + 自动把昨日勾选了 need_review 的任务流转为今日接班复核任务
 func (s *Store) GeneratePeriodicTasks(ctx context.Context, now time.Time) (int, error) {
 	now = now.In(s.loc)
+	todayStr := now.Format("2006-01-02")
+	yesterdayStr := now.AddDate(0, 0, -1).Format("2006-01-02")
+	nowISO := now.Format(time.RFC3339)
+
 	var generated int
 	err := s.withWriteTx(ctx, func(conn *sql.Conn) error {
+		// 1. 生成今日周期模板任务
 		rows, err := conn.QueryContext(ctx, `
-			SELECT t.id, t.post_id, t.title, t.description, t.cycle_type, t.weekdays, t.month_days
+			SELECT t.id, t.post_id, t.title, t.description, t.cycle_type, t.weekdays, t.month_days, t.need_review
 			FROM task_template t
 			JOIN post p ON p.id = t.post_id
 			WHERE t.is_active = 1 AND p.is_active = 1`)
@@ -1120,10 +1433,12 @@ func (s *Store) GeneratePeriodicTasks(ctx context.Context, now time.Time) (int, 
 		var tmpls []TaskTemplate
 		for rows.Next() {
 			var t TaskTemplate
-			if err := rows.Scan(&t.ID, &t.PostID, &t.Title, &t.Description, &t.CycleType, &t.Weekdays, &t.MonthDays); err != nil {
+			var nr int
+			if err := rows.Scan(&t.ID, &t.PostID, &t.Title, &t.Description, &t.CycleType, &t.Weekdays, &t.MonthDays, &nr); err != nil {
 				rows.Close()
 				return err
 			}
+			t.NeedReview = nr == 1
 			tmpls = append(tmpls, t)
 		}
 		rows.Close()
@@ -1141,12 +1456,47 @@ func (s *Store) GeneratePeriodicTasks(ctx context.Context, now time.Time) (int, 
 			}
 			generated += int(n)
 		}
+
+		// 2. 扫描昨日所有 need_review = 1 且未被取消/非“无此项”的任务，自动交给今日接班人复核检查
+		rRows, err := conn.QueryContext(ctx, `
+			SELECT id, post_id, title, description
+			FROM task_instance
+			WHERE business_date = ?
+			  AND need_review = 1
+			  AND status IN ('completed', 'pending')`, yesterdayStr)
+		if err != nil {
+			return err
+		}
+		type reviewSrc struct {
+			id     int64
+			postID sql.NullInt64
+			title  string
+			desc   string
+		}
+		var srcs []reviewSrc
+		for rRows.Next() {
+			var rs reviewSrc
+			if err := rRows.Scan(&rs.id, &rs.postID, &rs.title, &rs.desc); err != nil {
+				rRows.Close()
+				return err
+			}
+			srcs = append(srcs, rs)
+		}
+		rRows.Close()
+
+		for _, src := range srcs {
+			n, err := insertReviewTaskForParentTx(ctx, conn, src.id, src.postID, src.title, src.desc, todayStr, nowISO)
+			if err != nil {
+				return err
+			}
+			generated += int(n)
+		}
 		return nil
 	})
 	return generated, err
 }
 
-// ==================== 预排班表查询、保存、公平轮询草稿（优先每人每天1岗）与导入 ====================
+// ==================== 预排班表与公平轮询（严格避开人员休息日 + 优先每人每天1岗） ====================
 
 func (s *Store) GetScheduleRange(ctx context.Context, startDate string, days int) ([]string, []ScheduleEntry, error) {
 	if days < 1 {
@@ -1187,11 +1537,6 @@ func (s *Store) GetScheduleRange(ctx context.Context, startDate string, days int
 	return dates, list, rows.Err()
 }
 
-// GenerateFairRotaDraft 生成未来 N 天公平轮询草稿：
-// 1. 同一天优先保证每人最多 1 岗 (dayLoad 升序)；只有岗位数 > 参与轮询人数时才分配第 2 岗；
-// 2. 同日负载相同时，优先该岗位历史累计排班最少的人 (postCount 升序)；
-// 3. 其次全岗位历史总排班最少 (totalCount 升序)；
-// 4. 其次上次排该岗位日期最早的人 (lastDate 升序)。
 func (s *Store) GenerateFairRotaDraft(ctx context.Context, startDate string, days int) ([]ScheduleEntry, error) {
 	if days < 1 {
 		days = 1
@@ -1214,15 +1559,14 @@ func (s *Store) GenerateFairRotaDraft(ctx context.Context, startDate string, day
 		return nil, err
 	}
 
-	// 筛选参与轮询人员；若全员都未勾选参与轮询则兜底使用全部在职人员
-	var candidates []Person
+	var baseCandidates []Person
 	for _, p := range allPeople {
 		if p.InRota {
-			candidates = append(candidates, p)
+			baseCandidates = append(baseCandidates, p)
 		}
 	}
-	if len(candidates) == 0 {
-		candidates = allPeople
+	if len(baseCandidates) == 0 {
+		baseCandidates = allPeople
 	}
 
 	postCnt := make(map[int64]map[int64]int)
@@ -1233,7 +1577,6 @@ func (s *Store) GenerateFairRotaDraft(ctx context.Context, startDate string, day
 		lastDate[po.ID] = make(map[int64]string)
 	}
 
-	// 加载 startDate 之前的历史排班统计作为基线
 	rows, err := s.readDB.QueryContext(ctx, `
 		SELECT post_id, person_id, COUNT(1), MAX(schedule_date)
 		FROM post_schedule
@@ -1259,28 +1602,37 @@ func (s *Store) GenerateFairRotaDraft(ctx context.Context, startDate string, day
 
 	var draft []ScheduleEntry
 	for d := 0; d < days; d++ {
-		dStr := start.AddDate(0, 0, d).Format("2006-01-02")
-		dayLoad := make(map[int64]int)
+		dayTime := start.AddDate(0, 0, d)
+		dStr := dayTime.Format("2006-01-02")
 
+		// 过滤掉当天休息的伙伴（命中每周固定休息日 或 当月/指定日期调休）
+		var availableToday []Person
+		for _, p := range baseCandidates {
+			if !isPersonRestingOn(p, dayTime) {
+				availableToday = append(availableToday, p)
+			}
+		}
+		if len(availableToday) == 0 {
+			// 当日全员休息则留空不强行排班
+			continue
+		}
+
+		dayLoad := make(map[int64]int)
 		for _, po := range posts {
-			sorted := make([]Person, len(candidates))
-			copy(sorted, candidates)
+			sorted := make([]Person, len(availableToday))
+			copy(sorted, availableToday)
 			sort.Slice(sorted, func(i, j int) bool {
 				pi, pj := sorted[i], sorted[j]
-				// 优先级 1：当天已排岗位数最少（0岗绝对优先于1岗，实现“优先每人每天1岗”）
 				if dayLoad[pi.ID] != dayLoad[pj.ID] {
 					return dayLoad[pi.ID] < dayLoad[pj.ID]
 				}
-				// 优先级 2：该岗位历史累计当值次数最少
 				ci, cj := postCnt[po.ID][pi.ID], postCnt[po.ID][pj.ID]
 				if ci != cj {
 					return ci < cj
 				}
-				// 优先级 3：全岗位累计当值总次数最少
 				if totalCnt[pi.ID] != totalCnt[pj.ID] {
 					return totalCnt[pi.ID] < totalCnt[pj.ID]
 				}
-				// 优先级 4：上次当值该岗位日期最早
 				li, lj := lastDate[po.ID][pi.ID], lastDate[po.ID][pj.ID]
 				if li != lj {
 					return li < lj
@@ -1306,7 +1658,6 @@ func (s *Store) GenerateFairRotaDraft(ctx context.Context, startDate string, day
 	return draft, nil
 }
 
-// SaveScheduleEntries 批量保存排班表，并同步更新对应日期/岗位下未交接的 pending 任务（绝不覆盖已完成/无此项记录）
 func (s *Store) SaveScheduleEntries(ctx context.Context, entries []ScheduleEntry) (int, error) {
 	if len(entries) == 0 {
 		return 0, nil
@@ -1353,7 +1704,7 @@ func (s *Store) SaveScheduleEntries(ctx context.Context, entries []ScheduleEntry
 				return err
 			}
 
-			// 同步更新对应日期、该岗位下待安排或未发生交接的 pending 任务
+			// 同步更新对应日期、该岗位下未发生交接的 pending 任务（含周期任务、临时任务、以及次日接班复核任务！）
 			_, err = conn.ExecContext(ctx, `
 				UPDATE task_instance
 				SET original_assignee_id = COALESCE(original_assignee_id, ?),
@@ -1374,9 +1725,6 @@ func (s *Store) SaveScheduleEntries(ctx context.Context, entries []ScheduleEntry
 	return saved, err
 }
 
-// ImportScheduleText 解析二维排班矩阵或三列明细文本并写入排班表
-// 支持格式 A（矩阵式，首行为表头）：日期,前台岗,库房岗 \n 2026-11-24,张三,李四
-// 支持格式 B（明细式）：2026-11-24,前台岗,张三
 func (s *Store) ImportScheduleText(ctx context.Context, rawText string) (int, error) {
 	posts, err := s.ListPosts(ctx, true)
 	if err != nil {
@@ -1433,7 +1781,6 @@ func (s *Store) ImportScheduleText(ctx context.Context, rawText string) (int, er
 	firstRow := rows[0]
 	_, firstCellIsDate := normalizeDate(firstRow[0])
 
-	// 判断是否为二维矩阵表（第一行第 2 列起能匹配岗位名）
 	isMatrix := false
 	if !firstCellIsDate && len(firstRow) >= 2 {
 		matchedPosts := 0
@@ -1481,10 +1828,9 @@ func (s *Store) ImportScheduleText(ctx context.Context, rawText string) (int, er
 			}
 		}
 	} else {
-		// 明细三列式：日期, 岗位, 人员
 		startIdx := 0
 		if !firstCellIsDate {
-			startIdx = 1 // 跳过表头“日期,岗位,人员”
+			startIdx = 1
 		}
 		for rIdx := startIdx; rIdx < len(rows); rIdx++ {
 			r := rows[rIdx]
@@ -1513,7 +1859,7 @@ func (s *Store) ImportScheduleText(ctx context.Context, rawText string) (int, er
 	return s.SaveScheduleEntries(ctx, entries)
 }
 
-// ==================== 临时任务 ====================
+// ==================== 临时任务（支持勾选次日复核） ====================
 
 type AdhocInput struct {
 	Title        string `json:"title"`
@@ -1521,6 +1867,7 @@ type AdhocInput struct {
 	BusinessDate string `json:"business_date"`
 	PostID       *int64 `json:"post_id"`
 	AssigneeID   *int64 `json:"assignee_id"`
+	NeedReview   bool   `json:"need_review"`
 }
 
 func (s *Store) CreateAdhocTask(ctx context.Context, in AdhocInput) (int64, error) {
@@ -1539,6 +1886,11 @@ func (s *Store) CreateAdhocTask(ctx context.Context, in AdhocInput) (int64, erro
 		return 0, errors.New("请至少指定当值伙伴或关联岗位")
 	}
 
+	nrInt := 0
+	if in.NeedReview {
+		nrInt = 1
+	}
+
 	var id int64
 	err := s.withWriteTx(ctx, func(conn *sql.Conn) error {
 		var finalAssignee any
@@ -1549,12 +1901,7 @@ func (s *Store) CreateAdhocTask(ctx context.Context, in AdhocInput) (int64, erro
 			}
 			finalAssignee = *in.AssigneeID
 		} else if in.PostID != nil && *in.PostID > 0 {
-			var schedPerson sql.NullInt64
-			_ = conn.QueryRowContext(ctx, `
-				SELECT ps.person_id FROM post_schedule ps
-				JOIN person p ON p.id = ps.person_id AND p.is_active = 1
-				WHERE ps.post_id = ? AND ps.schedule_date = ? LIMIT 1`,
-				*in.PostID, in.BusinessDate).Scan(&schedPerson)
+			schedPerson := resolveScheduledPersonTx(ctx, conn, *in.PostID, in.BusinessDate)
 			if schedPerson.Valid {
 				finalAssignee = schedPerson.Int64
 			}
@@ -1568,15 +1915,15 @@ func (s *Store) CreateAdhocTask(ctx context.Context, in AdhocInput) (int64, erro
 		res, err := conn.ExecContext(ctx, `
 			INSERT INTO task_instance(
 				source, template_id, post_id, title, description,
-				period_key, business_date, original_assignee_id, current_assignee_id,
+				period_key, business_date, need_review, original_assignee_id, current_assignee_id,
 				status, created_at
-			) VALUES('adhoc', NULL, ?, ?, ?, NULL, ?, ?, ?, 'pending', ?)`,
-			postPtr, in.Title, in.Description, in.BusinessDate, finalAssignee, finalAssignee, s.NowISO())
+			) VALUES('adhoc', NULL, ?, ?, ?, NULL, ?, ?, ?, ?, 'pending', ?)`,
+			postPtr, in.Title, in.Description, in.BusinessDate, nrInt, finalAssignee, finalAssignee, s.NowISO())
 		if err != nil {
 			return err
 		}
 		id, _ = res.LastInsertId()
-		s.logger.Info("添加临时任务", "task_id", id, "date", in.BusinessDate)
+		s.logger.Info("添加临时任务", "task_id", id, "date", in.BusinessDate, "need_review", in.NeedReview)
 		return nil
 	})
 	return id, err
@@ -1589,6 +1936,9 @@ SELECT
 	ti.id, ti.source, ti.template_id, ti.post_id,
 	COALESCE(po.name, '个人直派'), COALESCE(po.color, '#8E8E93'),
 	ti.title, ti.description, ti.period_key, ti.business_date,
+	ti.need_review, ti.review_of_task_id,
+	COALESCE(tp.business_date, ''), COALESCE(tp.status, ''),
+	COALESCE(p_pcurr.nickname, '待安排'), COALESCE(p_pcomp.nickname, ''), COALESCE(tp.completed_at, ''),
 	ti.original_assignee_id, COALESCE(p_orig.nickname, '待安排'),
 	ti.current_assignee_id, COALESCE(p_curr.nickname, '待安排'),
 	ti.status,
@@ -1596,21 +1946,27 @@ SELECT
 	ti.not_applicable_by, COALESCE(p_na.nickname, ''), ti.not_applicable_at, ti.not_applicable_note,
 	ti.cancelled_by, ti.cancelled_at, ti.created_at
 FROM task_instance ti
-LEFT JOIN post po       ON po.id = ti.post_id
-LEFT JOIN person p_orig ON p_orig.id = ti.original_assignee_id
-LEFT JOIN person p_curr ON p_curr.id = ti.current_assignee_id
-LEFT JOIN person p_comp ON p_comp.id = ti.completed_by
-LEFT JOIN person p_na   ON p_na.id = ti.not_applicable_by
+LEFT JOIN post po          ON po.id = ti.post_id
+LEFT JOIN task_instance tp ON tp.id = ti.review_of_task_id
+LEFT JOIN person p_pcurr   ON p_pcurr.id = tp.current_assignee_id
+LEFT JOIN person p_pcomp   ON p_pcomp.id = tp.completed_by
+LEFT JOIN person p_orig    ON p_orig.id = ti.original_assignee_id
+LEFT JOIN person p_curr    ON p_curr.id = ti.current_assignee_id
+LEFT JOIN person p_comp    ON p_comp.id = ti.completed_by
+LEFT JOIN person p_na      ON p_na.id = ti.not_applicable_by
 `
 
 func scanTaskRow(scanner interface{ Scan(dest ...any) error }) (TaskInstance, error) {
 	var t TaskInstance
-	var tmplID, postID, origID, currID, compBy, naBy, cancelBy sql.NullInt64
+	var needRev int
+	var tmplID, postID, revOfID, origID, currID, compBy, naBy, cancelBy sql.NullInt64
 	var pKey, compAt, naAt, naNote, cancelAt sql.NullString
 
 	err := scanner.Scan(
 		&t.ID, &t.Source, &tmplID, &postID, &t.PostName, &t.PostColor,
 		&t.Title, &t.Description, &pKey, &t.BusinessDate,
+		&needRev, &revOfID,
+		&t.ParentDate, &t.ParentStatus, &t.ParentAssigneeName, &t.ParentCompletedBy, &t.ParentCompletedAt,
 		&origID, &t.OriginalName,
 		&currID, &t.CurrentName,
 		&t.Status,
@@ -1621,6 +1977,12 @@ func scanTaskRow(scanner interface{ Scan(dest ...any) error }) (TaskInstance, er
 	if err != nil {
 		return t, err
 	}
+	t.NeedReview = needRev == 1
+	if t.Source == "review" {
+		t.BadgeColor = FixedReviewColor
+	} else {
+		t.BadgeColor = t.PostColor
+	}
 	if tmplID.Valid {
 		v := tmplID.Int64
 		t.TemplateID = &v
@@ -1628,6 +1990,10 @@ func scanTaskRow(scanner interface{ Scan(dest ...any) error }) (TaskInstance, er
 	if postID.Valid {
 		v := postID.Int64
 		t.PostID = &v
+	}
+	if revOfID.Valid {
+		v := revOfID.Int64
+		t.ReviewOfTaskID = &v
 	}
 	if pKey.Valid {
 		v := pKey.String
@@ -1692,12 +2058,14 @@ func (s *Store) ListTasks(ctx context.Context, businessDate, scope string, userI
 		args = append(args, postID)
 	}
 
+	// 排序规则：岗位排序优先 -> 待完成优先 -> 同一岗位内“次日接班复核”置顶醒目展示 -> ID 升序
 	query := baseTaskSelectSQL +
 		" WHERE " + strings.Join(conds, " AND ") +
 		` ORDER BY
 			COALESCE(po.sort_order, 9999) ASC,
 			COALESCE(ti.post_id, 999999) ASC,
 			CASE ti.status WHEN 'pending' THEN 0 WHEN 'completed' THEN 1 WHEN 'not_applicable' THEN 2 ELSE 3 END,
+			CASE WHEN ti.source = 'review' THEN 0 ELSE 1 END,
 			ti.id ASC`
 
 	rows, err := s.readDB.QueryContext(ctx, query, args...)
@@ -1730,6 +2098,10 @@ func (s *Store) CompleteTask(ctx context.Context, taskID, completedByID int64, o
 	if completedByID <= 0 {
 		completedByID = operator.ID
 	}
+	now := s.Now()
+	nowISO := now.Format(time.RFC3339)
+	todayStr := now.Format("2006-01-02")
+
 	var out TaskInstance
 	err := s.withWriteTx(ctx, func(conn *sql.Conn) error {
 		var active int
@@ -1744,7 +2116,7 @@ func (s *Store) CompleteTask(ctx context.Context, taskID, completedByID int64, o
 			    original_assignee_id = COALESCE(original_assignee_id, ?),
 			    current_assignee_id  = COALESCE(current_assignee_id, ?)
 			WHERE id = ? AND status = 'pending'`,
-			completedByID, s.NowISO(), completedByID, completedByID, taskID)
+			completedByID, nowISO, completedByID, completedByID, taskID)
 		if err != nil {
 			return err
 		}
@@ -1760,8 +2132,23 @@ func (s *Store) CompleteTask(ctx context.Context, taskID, completedByID int64, o
 			}
 			return ErrInvalidStatus
 		}
+
+		// 若补完的是过去日期且带 need_review 的任务，而其对应的次日已经到达（<= today），立即幂等补齐复核卡片
+		if curr.NeedReview {
+			if bizT, pErr := time.ParseInLocation("2006-01-02", curr.BusinessDate, s.loc); pErr == nil {
+				nextDayStr := bizT.AddDate(0, 0, 1).Format("2006-01-02")
+				if nextDayStr <= todayStr {
+					var pID sql.NullInt64
+					if curr.PostID != nil {
+						pID = sql.NullInt64{Int64: *curr.PostID, Valid: true}
+					}
+					_, _ = insertReviewTaskForParentTx(ctx, conn, curr.ID, pID, curr.Title, curr.Description, nextDayStr, nowISO)
+				}
+			}
+		}
+
 		out = curr
-		s.logger.Info("任务已完成", "task_id", taskID, "completed_by", out.CompletedByName, "operator", operator.Nickname)
+		s.logger.Info("任务已完成", "task_id", taskID, "source", out.Source, "completed_by", out.CompletedByName)
 		return nil
 	})
 	return out, err
@@ -2002,7 +2389,7 @@ func (s *Store) ListHandoverRecords(ctx context.Context, businessDate string) ([
 	return list, rows.Err()
 }
 
-// ==================== 统计口径与翻阅式「历史完成手账」 ====================
+// ==================== 统计与历史手账 ====================
 
 func (s *Store) GetDailyStats(ctx context.Context, businessDate string) (DailyStats, error) {
 	if businessDate == "" {
@@ -2046,7 +2433,6 @@ func (s *Store) GetDailyStats(ctx context.Context, businessDate string) (DailySt
 	return st, nil
 }
 
-// GetHistoryBookPage 获取指定日期手账书页、前后可翻阅日期与最近 60 个有任务记录章节轴
 func (s *Store) GetHistoryBookPage(ctx context.Context, targetDate string, skipEmpty bool) (HistoryBookPage, error) {
 	today := s.TodayStr()
 	if targetDate == "" {
@@ -2056,7 +2442,6 @@ func (s *Store) GetHistoryBookPage(ctx context.Context, targetDate string, skipE
 	var page HistoryBookPage
 	page.Date = targetDate
 
-	// 查询最近 60 个有任务记录的业务日作为底部章节轴（按时间正序，像漫画话数条）
 	cRows, err := s.readDB.QueryContext(ctx, `
 		SELECT business_date,
 		       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),
@@ -2081,7 +2466,6 @@ func (s *Store) GetHistoryBookPage(ctx context.Context, targetDate string, skipE
 		}
 	}
 
-	// 计算上一页 / 下一页日期
 	if skipEmpty {
 		_ = s.readDB.QueryRowContext(ctx,
 			"SELECT COALESCE(MAX(business_date), '') FROM task_instance WHERE business_date < ? AND status != 'cancelled'",
@@ -2106,7 +2490,7 @@ func (s *Store) GetHistoryBookPage(ctx context.Context, targetDate string, skipE
 	return page, nil
 }
 
-// ==================== 在线安全备份 ====================
+// ==================== 在线安全备份（含忙等待重试与完整性校验） ====================
 
 func (s *Store) PerformBackup(ctx context.Context, now time.Time) (string, error) {
 	now = now.In(s.loc)
@@ -2114,8 +2498,25 @@ func (s *Store) PerformBackup(ctx context.Context, now time.Time) (string, error
 	destPath := filepath.Join(s.backupDir, fileName)
 	escapedDest := strings.ReplaceAll(filepath.ToSlash(destPath), "'", "''")
 
-	if _, err := s.writeDB.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s';", escapedDest)); err != nil {
-		return "", fmt.Errorf("VACUUM INTO 失败: %w", err)
+	var vacErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(100*attempt) * time.Millisecond)
+			_ = os.Remove(destPath)
+		}
+		conn, cErr := s.writeDB.Conn(ctx)
+		if cErr != nil {
+			vacErr = cErr
+			continue
+		}
+		_, vacErr = conn.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s';", escapedDest))
+		_ = conn.Close()
+		if vacErr == nil || !isBusyErr(vacErr) {
+			break
+		}
+	}
+	if vacErr != nil {
+		return "", fmt.Errorf("VACUUM INTO 失败: %w", vacErr)
 	}
 	_ = os.Chmod(destPath, 0600)
 
