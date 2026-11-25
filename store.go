@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -41,6 +42,9 @@ type Store struct {
 	backupDir string
 	loc       *time.Location
 	logger    *slog.Logger
+
+	clockMu sync.RWMutex
+	nowFunc func() time.Time
 }
 
 type Person struct {
@@ -182,7 +186,7 @@ func buildDSN(dbPath string, readOnly bool) string {
 		"_pragma=busy_timeout(5000)",
 		"_pragma=foreign_keys(ON)",
 		"_pragma=temp_store(MEMORY)",
-		"_pragma=cache_size(-32000)", // 优化为 32MB 页缓存，降低常驻内存浪费
+		"_pragma=cache_size(-32000)", // 32MB 页缓存，兼顾性能与低内存占用
 	}
 	if readOnly {
 		pragmas = append(pragmas, "_pragma=query_only(ON)")
@@ -227,6 +231,7 @@ func NewStore(dbPath, backupDir string, loc *time.Location, logger *slog.Logger)
 		backupDir: backupDir,
 		loc:       loc,
 		logger:    logger,
+		nowFunc:   func() time.Time { return time.Now().In(loc) },
 	}
 
 	if err := s.SelfCheck(context.Background()); err != nil {
@@ -239,6 +244,30 @@ func NewStore(dbPath, backupDir string, loc *time.Location, logger *slog.Logger)
 	}
 	return s, nil
 }
+
+// SetClock 供单元测试安全注入模拟时钟，避免测试受物理机器当前日期干扰
+func (s *Store) SetClock(fn func() time.Time) {
+	s.clockMu.Lock()
+	defer s.clockMu.Unlock()
+	if fn == nil {
+		s.nowFunc = func() time.Time { return time.Now().In(s.loc) }
+	} else {
+		s.nowFunc = fn
+	}
+}
+
+func (s *Store) Now() time.Time {
+	s.clockMu.RLock()
+	fn := s.nowFunc
+	s.clockMu.RUnlock()
+	if fn != nil {
+		return fn().In(s.loc)
+	}
+	return time.Now().In(s.loc)
+}
+
+func (s *Store) NowISO() string   { return s.Now().Format(time.RFC3339) }
+func (s *Store) TodayStr() string { return s.Now().Format("2006-01-02") }
 
 func (s *Store) SelfCheck(ctx context.Context) error {
 	info, err := os.Stat(s.backupDir)
@@ -277,10 +306,6 @@ func (s *Store) Close() error {
 	}
 	return err2
 }
-
-func (s *Store) Now() time.Time   { return time.Now().In(s.loc) }
-func (s *Store) NowISO() string   { return s.Now().Format(time.RFC3339) }
-func (s *Store) TodayStr() string { return s.Now().Format("2006-01-02") }
 
 func initAndMigrateSchema(db *sql.DB) error {
 	ddl := `
@@ -402,7 +427,6 @@ CREATE INDEX IF NOT EXISTS idx_session_expires ON session(expires_at);
 		return err
 	}
 
-	// 平滑增量补列
 	alterStmts := []string{
 		"ALTER TABLE person ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE person ADD COLUMN in_rota INTEGER NOT NULL DEFAULT 1",
@@ -420,7 +444,6 @@ CREATE INDEX IF NOT EXISTS idx_session_expires ON session(expires_at);
 		_, _ = db.Exec(st)
 	}
 
-	// 若从旧版升级上来，旧表 task_instance 的 CHECK 约束仅允许 ('template','adhoc')，安全无损重建以支持 'review'
 	var tblSQL string
 	_ = db.QueryRow("SELECT sql FROM sqlite_master WHERE type='table' AND name='task_instance'").Scan(&tblSQL)
 	if tblSQL != "" && !strings.Contains(tblSQL, "'review'") {
@@ -429,7 +452,6 @@ CREATE INDEX IF NOT EXISTS idx_session_expires ON session(expires_at);
 		}
 	}
 
-	// 确保全部唯一索引与复合查询索引齐全
 	idxStmts := []string{
 		"DROP INDEX IF EXISTS uk_task_instance_template_period",
 		"CREATE UNIQUE INDEX IF NOT EXISTS uk_task_instance_tmpl_bizdate ON task_instance(template_id, business_date) WHERE template_id IS NOT NULL",
@@ -590,7 +612,6 @@ func (s *Store) ensureBootstrapAdmin(ctx context.Context) error {
 	})
 }
 
-// ResetAdminPasswords 将所有管理员账号密码安全重置为默认密码 admin123（仅供主机托盘或本地命令行调用）
 func (s *Store) ResetAdminPasswords(ctx context.Context) error {
 	return s.withWriteTx(ctx, func(conn *sql.Conn) error {
 		rows, err := conn.QueryContext(ctx, "SELECT id FROM person WHERE is_admin = 1")
@@ -852,7 +873,6 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	})
 }
 
-// RunDailyMaintenance 每日垃圾清理与索引统计优化
 func (s *Store) RunDailyMaintenance(ctx context.Context, now time.Time) error {
 	_ = s.withWriteTx(ctx, func(conn *sql.Conn) error {
 		_, _ = conn.ExecContext(ctx, "DELETE FROM session WHERE expires_at < ?", now.Format(time.RFC3339))
@@ -879,7 +899,6 @@ func normalizeRestMonthDays(raw string, loc *time.Location) (string, error) {
 		if tok == "" {
 			continue
 		}
-		// 支持输入完整日期 YYYY-MM-DD
 		normDate := strings.ReplaceAll(strings.ReplaceAll(tok, "/", "-"), ".", "-")
 		if strings.Count(normDate, "-") == 2 {
 			t, err := time.ParseInLocation("2006-1-2", normDate, loc)
@@ -896,7 +915,6 @@ func normalizeRestMonthDays(raw string, loc *time.Location) (string, error) {
 			}
 			continue
 		}
-		// 支持输入当月几号 1~31
 		dayNum, err := strconv.Atoi(strings.TrimSuffix(tok, "日"))
 		if err != nil {
 			dayNum, err = strconv.Atoi(strings.TrimSuffix(tok, "号"))
@@ -913,7 +931,6 @@ func normalizeRestMonthDays(raw string, loc *time.Location) (string, error) {
 	return strings.Join(items, ","), nil
 }
 
-// isPersonRestingOn 判断伙伴在指定日期是否处于休息状态（命中固定周休 或 命中当月/指定日调休）
 func isPersonRestingOn(p Person, t time.Time) bool {
 	wd := int(t.Weekday())
 	for _, d := range parseSavedInts(p.RestWeekdays) {
@@ -937,7 +954,6 @@ func isPersonRestingOn(p Person, t time.Time) bool {
 				return true
 			}
 		} else if v, err := strconv.Atoi(tok); err == nil {
-			// 纯日号若记录了所属月份，仅在该月生效（防止本月临时调休跨月污染下月）；未记录月份则每月通用
 			if (p.RestMonth == "" || p.RestMonth == curMonth) && v == dayNum {
 				return true
 			}
@@ -1381,7 +1397,6 @@ func insertTemplateInstanceTx(ctx context.Context, conn *sql.Conn, t TaskTemplat
 	return res.RowsAffected()
 }
 
-// insertReviewTaskForParentTx 为昨日需复核任务在今日生成“次日接班复核”卡片（幂等：受 uk_task_instance_review_of 保护）
 func insertReviewTaskForParentTx(ctx context.Context, conn *sql.Conn, parentID int64, postID sql.NullInt64, parentTitle, parentDesc, reviewBizDate, nowISO string) (int64, error) {
 	var postPtr, origPtr, currPtr any
 	if postID.Valid && postID.Int64 > 0 {
@@ -1412,7 +1427,6 @@ func insertReviewTaskForParentTx(ctx context.Context, conn *sql.Conn, parentID i
 	return res.RowsAffected()
 }
 
-// GeneratePeriodicTasks 生成今日周期任务 + 自动把昨日勾选了 need_review 的任务流转为今日接班复核任务
 func (s *Store) GeneratePeriodicTasks(ctx context.Context, now time.Time) (int, error) {
 	now = now.In(s.loc)
 	todayStr := now.Format("2006-01-02")
@@ -1421,7 +1435,6 @@ func (s *Store) GeneratePeriodicTasks(ctx context.Context, now time.Time) (int, 
 
 	var generated int
 	err := s.withWriteTx(ctx, func(conn *sql.Conn) error {
-		// 1. 生成今日周期模板任务
 		rows, err := conn.QueryContext(ctx, `
 			SELECT t.id, t.post_id, t.title, t.description, t.cycle_type, t.weekdays, t.month_days, t.need_review
 			FROM task_template t
@@ -1457,7 +1470,6 @@ func (s *Store) GeneratePeriodicTasks(ctx context.Context, now time.Time) (int, 
 			generated += int(n)
 		}
 
-		// 2. 扫描昨日所有 need_review = 1 且未被取消/非“无此项”的任务，自动交给今日接班人复核检查
 		rRows, err := conn.QueryContext(ctx, `
 			SELECT id, post_id, title, description
 			FROM task_instance
@@ -1496,7 +1508,7 @@ func (s *Store) GeneratePeriodicTasks(ctx context.Context, now time.Time) (int, 
 	return generated, err
 }
 
-// ==================== 预排班表与公平轮询（严格避开人员休息日 + 优先每人每天1岗） ====================
+// ==================== 预排班表与公平轮询 ====================
 
 func (s *Store) GetScheduleRange(ctx context.Context, startDate string, days int) ([]string, []ScheduleEntry, error) {
 	if days < 1 {
@@ -1605,7 +1617,6 @@ func (s *Store) GenerateFairRotaDraft(ctx context.Context, startDate string, day
 		dayTime := start.AddDate(0, 0, d)
 		dStr := dayTime.Format("2006-01-02")
 
-		// 过滤掉当天休息的伙伴（命中每周固定休息日 或 当月/指定日期调休）
 		var availableToday []Person
 		for _, p := range baseCandidates {
 			if !isPersonRestingOn(p, dayTime) {
@@ -1613,7 +1624,6 @@ func (s *Store) GenerateFairRotaDraft(ctx context.Context, startDate string, day
 			}
 		}
 		if len(availableToday) == 0 {
-			// 当日全员休息则留空不强行排班
 			continue
 		}
 
@@ -1704,7 +1714,6 @@ func (s *Store) SaveScheduleEntries(ctx context.Context, entries []ScheduleEntry
 				return err
 			}
 
-			// 同步更新对应日期、该岗位下未发生交接的 pending 任务（含周期任务、临时任务、以及次日接班复核任务！）
 			_, err = conn.ExecContext(ctx, `
 				UPDATE task_instance
 				SET original_assignee_id = COALESCE(original_assignee_id, ?),
@@ -1859,7 +1868,7 @@ func (s *Store) ImportScheduleText(ctx context.Context, rawText string) (int, er
 	return s.SaveScheduleEntries(ctx, entries)
 }
 
-// ==================== 临时任务（支持勾选次日复核） ====================
+// ==================== 临时任务 ====================
 
 type AdhocInput struct {
 	Title        string `json:"title"`
@@ -2058,7 +2067,6 @@ func (s *Store) ListTasks(ctx context.Context, businessDate, scope string, userI
 		args = append(args, postID)
 	}
 
-	// 排序规则：岗位排序优先 -> 待完成优先 -> 同一岗位内“次日接班复核”置顶醒目展示 -> ID 升序
 	query := baseTaskSelectSQL +
 		" WHERE " + strings.Join(conds, " AND ") +
 		` ORDER BY
@@ -2133,11 +2141,12 @@ func (s *Store) CompleteTask(ctx context.Context, taskID, completedByID int64, o
 			return ErrInvalidStatus
 		}
 
-		// 若补完的是过去日期且带 need_review 的任务，而其对应的次日已经到达（<= today），立即幂等补齐复核卡片
+		// 精准补偿：仅当今天补打勾“昨天”的需复核任务（例如凌晨 00:00~00:04 之间补完）时，才为今天实时确保复核单存在；
+		// 绝不对更早的历史日期塞入幽灵待办，也不提前生成明天的复核单。
 		if curr.NeedReview {
 			if bizT, pErr := time.ParseInLocation("2006-01-02", curr.BusinessDate, s.loc); pErr == nil {
 				nextDayStr := bizT.AddDate(0, 0, 1).Format("2006-01-02")
-				if nextDayStr <= todayStr {
+				if nextDayStr == todayStr {
 					var pID sql.NullInt64
 					if curr.PostID != nil {
 						pID = sql.NullInt64{Int64: *curr.PostID, Valid: true}
@@ -2490,7 +2499,7 @@ func (s *Store) GetHistoryBookPage(ctx context.Context, targetDate string, skipE
 	return page, nil
 }
 
-// ==================== 在线安全备份（含忙等待重试与完整性校验） ====================
+// ==================== 在线安全备份 ====================
 
 func (s *Store) PerformBackup(ctx context.Context, now time.Time) (string, error) {
 	now = now.In(s.loc)
