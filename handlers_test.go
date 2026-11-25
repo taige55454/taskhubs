@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +91,7 @@ func loginViaAPI(t *testing.T, e *apiTestEnv, nickname, password string) (*http.
 // 1. 测试全量 24 个业务与后台 HTTP 接口完整闭环
 func TestAllHTTPEndpointsEndToEnd(t *testing.T) {
 	e := newAPITestEnv(t)
+	ctx := context.Background()
 
 	// 静态文件、Service Worker 缓存头与健康检查
 	resRoot := e.doJSON(t, http.MethodGet, "/", nil, nil, "")
@@ -153,8 +156,8 @@ func TestAllHTTPEndpointsEndToEnd(t *testing.T) {
 	}
 
 	// 3) 管理员一键清除「设密小帅」的密码
-	people, _ := e.store.ListPeople(t.Context(), true)
-	posts, _ := e.store.ListPosts(t.Context(), true)
+	people, _ := e.store.ListPeople(ctx, true)
+	posts, _ := e.store.ListPosts(ctx, true)
 	postID := posts[0].ID
 	var meiID, shuaiID int64
 	for _, p := range people {
@@ -290,7 +293,7 @@ func TestLoginRateLimiterAndLazyCleanup(t *testing.T) {
 	// 预塞入 130 条超过 30 分钟的陈旧 IP 记录，验证防内存泄漏懒清理
 	e.srv.rateMu.Lock()
 	for i := 0; i < 130; i++ {
-		e.srv.attempts["10.0.0."+string(rune(i))] = &loginAttempt{
+		e.srv.attempts["10.0.0."+strconv.Itoa(i)] = &loginAttempt{
 			fails:    1,
 			lastSeen: time.Now().Add(-40 * time.Minute),
 		}
